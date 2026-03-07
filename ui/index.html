@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>X自動投稿コントロール</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:FILL@0..1"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar card">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          <strong>X投稿IQ</strong>
+        </div>
+        <nav class="menu">
+          <button class="pill active" data-page="dashboard">ダッシュボード</button>
+          <button class="pill" data-page="generation">投稿生成</button>
+          <button class="pill" data-page="queue">投稿キュー</button>
+          <button class="pill" data-page="settings">設定</button>
+        </nav>
+        <div class="top-actions">
+          <button class="icon-btn" id="refreshBtn">⟳</button>
+          <button class="avatar">U</button>
+        </div>
+      </header>
+
+      <section class="hero">
+        <div>
+          <h1>おかえりなさい、Uzu。</h1>
+          <p>UI上でX連動確認と、朝/昼/夕のdry-runを実行できます。</p>
+        </div>
+        <div class="hero-actions">
+          <button class="ghost" id="checkAccountBtn">X連動チェック</button>
+          <button class="primary" id="runSelectedBtn">選択枠をドライラン</button>
+        </div>
+      </section>
+
+      <section class="layout">
+        <aside class="rail card">
+          <button class="rail-btn active" data-page="dashboard" title="ダッシュボード"><span class="material-symbols-rounded">home</span></button>
+          <button class="rail-btn" data-page="generation" title="投稿生成とスロット"><span class="material-symbols-rounded">auto_awesome</span></button>
+          <button class="rail-btn" data-page="planner" title="投稿計画"><span class="material-symbols-rounded">calendar_month</span></button>
+          <button class="rail-btn" data-page="queue" title="投稿キュー確認"><span class="material-symbols-rounded">check_circle</span></button>
+          <button class="rail-btn" data-page="settings" title="設定"><span class="material-symbols-rounded">settings</span></button>
+          <p class="rail-hint" id="railHint">ダッシュボード</p>
+        </aside>
+
+        <div class="main-grid">
+          <article class="card summary" id="section-dashboard" data-page="dashboard">
+            <div class="card-head">
+              <div>
+                <h2>アカウント状態</h2>
+                <p>あなたのXアカウント連動状態</p>
+              </div>
+              <span class="chip" id="accountChip">未確認</span>
+            </div>
+            <div class="kpis">
+              <div>
+                <small>アカウント</small>
+                <strong id="accountName">-</strong>
+              </div>
+              <div>
+                <small>フォロワー</small>
+                <strong id="followers">-</strong>
+              </div>
+              <div>
+                <small>投稿数</small>
+                <strong id="tweetCount">-</strong>
+              </div>
+            </div>
+            <p id="accountMessage" class="helper">まず「X連動チェック」を実行してください。</p>
+            <div class="target-account-box">
+              <label>
+                <span>運用対象Xアカウント</span>
+                <input id="targetAccountInput" type="text" placeholder="@AbaboDesign" />
+              </label>
+              <div class="tweet-actions">
+                <button class="ghost" id="verifyTargetBtn">アカウント確認</button>
+                <button class="primary" id="saveTargetBtn">連結先を保存</button>
+              </div>
+              <p class="helper" id="targetAccountMessage">投稿先の運用アカウントを指定します。</p>
+            </div>
+          </article>
+
+          <article class="card posts" id="section-slots" data-page="generation">
+            <div class="card-head">
+              <div>
+                <h2>投稿スロット</h2>
+                <p>時間帯ごとに文体と目的を固定</p>
+              </div>
+            </div>
+            <div class="slot-cards">
+              <button class="slot-card active" data-slot="morning">
+                <b>07:00 朝</b>
+                <span>有益で濃い学習ポスト</span>
+              </button>
+              <button class="slot-card" data-slot="noon">
+                <b>12:00 昼</b>
+                <span>最新AI情報の引用シェア</span>
+              </button>
+              <button class="slot-card evening" data-slot="evening">
+                <b>18:00 夕方</b>
+                <span>共感ベースで柔らかく</span>
+              </button>
+            </div>
+          </article>
+
+          <article class="card preview" data-page="generation">
+            <div class="card-head">
+              <div>
+                <h2>下書きプレビュー</h2>
+                <p id="previewMeta">朝 / 170-280文字</p>
+              </div>
+              <button class="icon-btn" id="runThisBtn">▶</button>
+            </div>
+            <div class="draft-lab">
+              <label>
+                <span>試験投稿テーマ</span>
+                <input id="draftTopicInput" type="text" placeholder="例: 余白設計の基本 / 最新AIデザインニュース" />
+              </label>
+              <button class="ghost" id="generateDraftBtn">投稿文を作成</button>
+            </div>
+            <p class="helper" id="draftLabMessage">テーマを入れて、試験用の投稿文を生成できます。</p>
+            <div class="op-progress" id="draftProgressWrap" aria-live="polite">
+              <div class="op-progress-bar">
+                <i id="draftProgressBar"></i>
+              </div>
+              <p id="draftProgressText">待機中</p>
+            </div>
+            <div class="preview-dual">
+              <div>
+                <label class="editor-label" for="previewEditor">投稿文エディタ</label>
+                <textarea class="tweet-editor" id="previewEditor"></textarea>
+                <p class="helper" id="previewCount">0文字</p>
+              </div>
+              <div class="x-mock">
+                <div class="x-head">
+                  <div class="x-avatar" id="xPreviewAvatar">U</div>
+                  <div>
+                    <strong id="xPreviewName">Uzu</strong>
+                    <p id="xPreviewHandle">@your_account</p>
+                  </div>
+                  <span class="x-dot">···</span>
+                </div>
+                <div class="x-body" id="xPreviewText"></div>
+                <div class="x-foot">
+                  <span>💬 0</span>
+                  <span>🔁 0</span>
+                  <span>❤️ 0</span>
+                  <span>📊 0</span>
+                </div>
+              </div>
+            </div>
+            <div class="tweet-actions">
+              <button class="ghost slot-run" data-slot="morning">朝を実行</button>
+              <button class="ghost slot-run" data-slot="noon">昼を実行</button>
+              <button class="ghost slot-run" data-slot="evening">夕方を実行</button>
+              <select id="visualModeSelect" class="visual-mode-select">
+                <option value="auto">画像モード: 自動ローテーション</option>
+                <option value="design_case">画像モード: デザイン事例</option>
+                <option value="diagram">画像モード: 図解/概念図</option>
+                <option value="editorial">画像モード: エディトリアル</option>
+                <option value="photo">画像モード: 写真ベース</option>
+              </select>
+              <button class="ghost" id="generateImageBtn">Nano Bananaで画像生成</button>
+              <button class="primary" id="testPostBtn">試験投稿（X）</button>
+            </div>
+            <div class="generated-media-box">
+              <p class="helper" id="generatedMediaMessage">生成画像はここに表示されます（ロゴ・不明マークなし / シンプル優先）。</p>
+              <div class="op-progress" id="imageProgressWrap" aria-live="polite">
+                <div class="op-progress-bar">
+                  <i id="imageProgressBar"></i>
+                </div>
+                <p id="imageProgressText">待機中</p>
+              </div>
+              <img id="generatedMediaPreview" alt="generated preview" />
+              <label class="plan-check">
+                <input type="checkbox" id="useGeneratedMediaForTest" />
+                <span>試験投稿にこの生成画像を添付する</span>
+              </label>
+            </div>
+            <div class="test-post-controls">
+              <label>
+                <span>試験投稿メディア（任意）</span>
+                <input id="testMediaFile" type="file" accept="image/*,video/*" />
+              </label>
+              <label>
+                <span>出典URL（任意）</span>
+                <input id="testSourceUrl" type="text" placeholder="https://x.com/.../status/..." />
+              </label>
+              <label class="plan-check">
+                <input type="checkbox" id="testAttachSourceReply" />
+                <span>投稿後に出典URLをリプで付与</span>
+              </label>
+            </div>
+          </article>
+
+          <article class="card api-settings" id="section-settings" data-page="settings">
+            <div class="card-head">
+              <div>
+                <h2>API設定</h2>
+                <p>OpenAI と X API キーをUIから設定</p>
+              </div>
+              <button class="ghost" id="reloadEnvBtn">再読込</button>
+            </div>
+            <div class="api-grid">
+              <label>
+                <span>OPENAI_API_KEY</span>
+                <input id="OPENAI_API_KEY" type="password" placeholder="sk-..." />
+                <small id="mask_OPENAI_API_KEY">未設定</small>
+              </label>
+              <label>
+                <span>X_BEARER_TOKEN</span>
+                <input id="X_BEARER_TOKEN" type="password" placeholder="AAAA..." />
+                <small id="mask_X_BEARER_TOKEN">未設定</small>
+              </label>
+              <label>
+                <span>X_API_KEY</span>
+                <input id="X_API_KEY" type="password" placeholder="..." />
+                <small id="mask_X_API_KEY">未設定</small>
+              </label>
+              <label>
+                <span>X_API_SECRET</span>
+                <input id="X_API_SECRET" type="password" placeholder="..." />
+                <small id="mask_X_API_SECRET">未設定</small>
+              </label>
+              <label>
+                <span>X_ACCESS_TOKEN</span>
+                <input id="X_ACCESS_TOKEN" type="password" placeholder="..." />
+                <small id="mask_X_ACCESS_TOKEN">未設定</small>
+              </label>
+              <label>
+                <span>X_ACCESS_SECRET</span>
+                <input id="X_ACCESS_SECRET" type="password" placeholder="..." />
+                <small id="mask_X_ACCESS_SECRET">未設定</small>
+              </label>
+              <label>
+                <span>NANOBANANA_CMD_TEMPLATE</span>
+                <input id="NANOBANANA_CMD_TEMPLATE" type="password" placeholder='nanobanana --prompt "{prompt}" --out "{output}"' />
+                <small id="mask_NANOBANANA_CMD_TEMPLATE">未設定</small>
+              </label>
+              <label>
+                <span>FREEPIK_API_KEY</span>
+                <input id="FREEPIK_API_KEY" type="password" placeholder="fpk_..." />
+                <small id="mask_FREEPIK_API_KEY">未設定</small>
+              </label>
+            </div>
+            <div class="media-box">
+              <h3>メディア自動化</h3>
+              <p class="media-lead">
+                1) まず「メディア機能を有効化」<br />
+                2) 朝の画像自動添付 / 昼の出典リプを必要に応じてON<br />
+                3) 画像はロゴ・不明マークなし、シンプル構成を優先
+              </p>
+              <div class="media-grid">
+                <label class="media-toggle">
+                  <div>
+                    <b>メディア機能を有効化</b>
+                    <small>朝枠の画像生成・昼枠の出典リプ機能を有効にします。</small>
+                  </div>
+                  <input type="checkbox" id="media_enabled" />
+                </label>
+                <label class="media-toggle">
+                  <div>
+                    <b>朝枠で画像を自動生成して添付</b>
+                    <small>投稿本文を視覚化した画像を生成して添付します。</small>
+                  </div>
+                  <input type="checkbox" id="media_morning_generate_image" />
+                </label>
+                <label>
+                  <span>朝画像プロバイダ</span>
+                  <select id="media_morning_image_provider">
+                    <option value="nanobanana_cmd">nanobanana_cmd</option>
+                    <option value="freepik_mystic">freepik_mystic</option>
+                  </select>
+                </label>
+                <label>
+                  <span>画像出力先</span>
+                  <input id="media_morning_image_output_dir" type="text" placeholder="generated_media" />
+                </label>
+                <label class="media-toggle">
+                  <div>
+                    <b>昼引用投稿後に出典URLを自動リプ</b>
+                    <small>引用投稿の後に、出典URLを返信で自動付与します。</small>
+                  </div>
+                  <input type="checkbox" id="media_noon_reply_source_link" />
+                </label>
+              </div>
+              <p class="helper" id="mediaMessage">config.yaml の media 設定を編集します。</p>
+            </div>
+            <div class="media-box">
+              <h3>PDF知識ストック</h3>
+              <p class="media-lead">
+                PDF資料をアップロードしてストックすると、投稿文生成時に参考知見として使います。<br />
+                最新ニュースの鮮度を優先しつつ、PDFは基礎・背景の補強に使います。
+              </p>
+              <div class="media-grid">
+                <label>
+                  <span>PDFアップロード</span>
+                  <input id="pdfUploadInput" type="file" accept="application/pdf" />
+                </label>
+                <div class="tweet-actions">
+                  <button class="ghost" id="uploadPdfBtn">PDFを追加</button>
+                  <button class="ghost" id="reloadPdfBtn">一覧を再読込</button>
+                </div>
+              </div>
+              <p class="helper" id="pdfMessage">PDFストックは未読込です。</p>
+              <div class="plan-table-wrap">
+                <table class="plan-table">
+                  <thead>
+                    <tr>
+                      <th>ファイル</th>
+                      <th>ページ</th>
+                      <th>文字数</th>
+                      <th>優先度</th>
+                      <th>参照範囲</th>
+                      <th>追加日</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="pdfListBody">
+                    <tr><td colspan="7">PDFはまだありません。</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="tweet-actions">
+              <button class="primary" id="saveEnvBtn">API設定を保存</button>
+              <button class="ghost" id="saveMediaBtn">メディア設定を保存</button>
+            </div>
+            <p class="helper" id="envMessage">保存先: /Users/yuzoazu/Documents/New project/x_auto_post_tool/.env</p>
+          </article>
+
+          <article class="card planner" id="section-planner" data-page="planner">
+            <div class="card-head">
+              <div>
+                <h2>投稿計画ビルダー</h2>
+                <p>期間と投稿頻度を指定して事前確認</p>
+              </div>
+            </div>
+            <div class="plan-controls">
+              <label>
+                <span>開始日</span>
+                <input type="date" id="planStartDate" />
+              </label>
+              <label>
+                <span>期間単位</span>
+                <select id="planUnit">
+                  <option value="days">日</option>
+                  <option value="weeks">週</option>
+                  <option value="months">ヶ月</option>
+                </select>
+              </label>
+              <label>
+                <span>期間数</span>
+                <select id="planCount"></select>
+              </label>
+              <label class="plan-check">
+                <input type="checkbox" id="planEveryDay" checked />
+                <span>毎日投稿する</span>
+              </label>
+              <button class="primary" id="buildPlanBtn">計画を作成</button>
+              <button class="ghost" id="applyPlanToQueueBtn">計画をキューへ反映</button>
+            </div>
+            <div class="op-progress" id="planProgressWrap" aria-live="polite">
+              <div class="op-progress-bar">
+                <i id="planProgressBar"></i>
+              </div>
+              <p id="planProgressText">待機中</p>
+            </div>
+            <p class="helper" id="planMessage">条件を指定して「計画を作成」を押してください。</p>
+            <div class="plan-table-wrap">
+              <table class="plan-table" id="planTable">
+                <thead>
+                  <tr>
+                    <th>日付</th>
+                    <th>時刻</th>
+                    <th>枠</th>
+                    <th>テーマ</th>
+                    <th>下書き</th>
+                  </tr>
+                </thead>
+                <tbody id="planTbody"></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="card queue" data-page="generation">
+            <div class="card-head">
+              <div>
+                <h2>ドライラン出力</h2>
+                <p>CLI実行ログ</p>
+              </div>
+            </div>
+            <pre id="runOutput" class="run-output">ここにログが表示されます。</pre>
+          </article>
+
+          <article class="card queue-editor" id="section-queue" data-page="queue">
+            <div class="card-head">
+              <div>
+                <h2>投稿キュー</h2>
+                <p>投稿日時と本文を確認・修正</p>
+              </div>
+              <div class="tweet-actions">
+                <button class="ghost" id="loadQueueBtn">保存キュー読込</button>
+                <button class="primary" id="saveQueueBtn">キューを保存</button>
+              </div>
+            </div>
+            <p class="helper" id="queueMessage">投稿計画ビルダーで作成した計画をキューに反映してください。</p>
+            <div class="plan-table-wrap">
+              <table class="plan-table">
+                <thead>
+                  <tr>
+                    <th>日時</th>
+                    <th>枠</th>
+                    <th>テーマ</th>
+                    <th>投稿文（編集可）</th>
+                  </tr>
+                </thead>
+                <tbody id="queueTbody"></tbody>
+              </table>
+            </div>
+            <p class="helper">投稿文欄をクリックすると、上部のX表示プレビューに反映されます。</p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

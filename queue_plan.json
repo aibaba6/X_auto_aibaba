@@ -1,0 +1,42 @@
+- schedule_at: 2026-03-02T07:00
+  slot: morning
+  theme: デザイン基礎/応用（普遍）
+  text: '🔍 余白は“飾り”ではなく情報設計
+
+
+    ・詰め込みすぎると理解コストが上がり、離脱が増える。
+
+    ・意外とここを整えるだけで、見やすさと信頼感は変わります。
+
+
+    まずは 要素を1つ減らし、余白を8pxだけ増やして比較する。
+
+    #デザイン基礎 #UIデザイン #情報設計'
+  source_tweet_id: ''
+  source_author: ''
+  last_refreshed_at: ''
+  refresh_mode: ''
+- schedule_at: 2026-03-02T12:00
+  slot: noon
+  theme: '速報要約: 先週末〜当日の主要AIニュースを要点整理'
+  text: ''
+  source_tweet_id: ''
+  source_author: ''
+  last_refreshed_at: ''
+  refresh_mode: jit_noon
+- schedule_at: 2026-03-02T18:00
+  slot: evening
+  theme: 共感/あるある（ゆるめ）
+  text: '修正依頼が3件同時に来る夕方
+
+
+    優先順位を決める5分が、だいたい一番効く。
+
+    先に“今日やる1件”を固定すると、気持ちがだいぶ落ち着きます。
+
+
+    #デザイナーあるある #制作現場 #仕事術'
+  source_tweet_id: ''
+  source_author: ''
+  last_refreshed_at: ''
+  refresh_mode: ''

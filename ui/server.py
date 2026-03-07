@@ -1,0 +1,1172 @@
+from __future__ import annotations
+
+import json
+import shlex
+import shutil
+import subprocess
+import time
+from datetime import date, datetime, timedelta
+from pathlib import Path
+import sys
+
+from dotenv import dotenv_values, load_dotenv
+from flask import Flask, jsonify, request, send_from_directory
+
+import os
+import tweepy
+import yaml
+from openai import OpenAI
+
+ROOT = Path(__file__).resolve().parents[1]
+DATA_ROOT = Path(os.getenv("XAP_DATA_DIR", str(ROOT))).resolve()
+UI_DIR = ROOT / "ui"
+CONFIG_PATH = ROOT / "config.yaml"
+ENV_PATH = ROOT / ".env"
+QUEUE_PATH = DATA_ROOT / "queue_plan.json"
+ENV_KEYS = [
+    "OPENAI_API_KEY",
+    "X_BEARER_TOKEN",
+    "X_API_KEY",
+    "X_API_SECRET",
+    "X_ACCESS_TOKEN",
+    "X_ACCESS_SECRET",
+    "NANOBANANA_CMD_TEMPLATE",
+    "FREEPIK_API_KEY",
+]
+ACCOUNT_REQUIRED_KEYS = ["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET"]
+
+load_dotenv(ENV_PATH)
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.x_autopost_tool.collectors import fetch_rss_items, filter_blocked
+from src.x_autopost_tool.llm import build_post_drafts, normalize_x_post_text
+from src.x_autopost_tool.media_tools import generate_image_with_freepik_mystic, generate_image_with_nanobanana
+from src.x_autopost_tool.pdf_knowledge import (
+    delete_pdf_doc,
+    get_pdf_knowledge_snippets,
+    ingest_pdf_bytes,
+    load_pdf_index,
+    update_pdf_doc_settings,
+)
+from src.x_autopost_tool.settings import load_config
+from src.x_autopost_tool.uniqueness import (
+    MemoryStore,
+    is_duplicate,
+    load_memory,
+    register_text,
+    save_memory,
+)
+
+app = Flask(__name__, static_folder=str(UI_DIR), static_url_path="")
+
+
+def _openai_client() -> OpenAI:
+    return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+@app.errorhandler(405)
+def handle_405(e):
+    if request.path.startswith("/api/"):
+        allow = ",".join(sorted(getattr(e, "valid_methods", []) or []))
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "message": f"Method Not Allowed: {request.path} はこのHTTPメソッドに対応していません。",
+                    "allow": allow,
+                }
+            ),
+            405,
+        )
+    return e
+
+
+@app.errorhandler(404)
+def handle_404(e):
+    if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "message": f"Not Found: {request.path} が見つかりません。"}), 404
+    return e
+
+
+def _x_client() -> tweepy.Client:
+    return tweepy.Client(
+        bearer_token=os.getenv("X_BEARER_TOKEN"),
+        consumer_key=os.getenv("X_API_KEY"),
+        consumer_secret=os.getenv("X_API_SECRET"),
+        access_token=os.getenv("X_ACCESS_TOKEN"),
+        access_token_secret=os.getenv("X_ACCESS_SECRET"),
+        wait_on_rate_limit=True,
+    )
+
+
+def _x_api_v1() -> tweepy.API:
+    auth = tweepy.OAuth1UserHandler(
+        consumer_key=os.getenv("X_API_KEY"),
+        consumer_secret=os.getenv("X_API_SECRET"),
+        access_token=os.getenv("X_ACCESS_TOKEN"),
+        access_token_secret=os.getenv("X_ACCESS_SECRET"),
+    )
+    return tweepy.API(auth)
+
+
+def _mask_secret(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}{'*' * (len(value) - 8)}{value[-4:]}"
+
+
+def _load_env_map() -> dict[str, str]:
+    if not ENV_PATH.exists():
+        return {}
+    raw = dotenv_values(ENV_PATH)
+    return {k: str(v) for k, v in raw.items() if v is not None}
+
+
+def _save_env_map(env_map: dict[str, str]) -> None:
+    lines = [f"{k}={v}" for k, v in env_map.items() if v]
+    ENV_PATH.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
+def _load_config_map() -> dict:
+    if not CONFIG_PATH.exists():
+        return {}
+    return yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+
+
+def _save_config_map(config_map: dict) -> None:
+    CONFIG_PATH.write_text(
+        yaml.safe_dump(config_map, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def _load_media_config() -> dict:
+    conf = _load_config_map()
+    media = conf.get("media", {}) or {}
+    return {
+        "enabled": bool(media.get("enabled", False)),
+        "morning_generate_image": bool(media.get("morning_generate_image", False)),
+        "morning_image_provider": str(media.get("morning_image_provider", "nanobanana_cmd")),
+        "morning_image_output_dir": str(media.get("morning_image_output_dir", "generated_media")),
+        "noon_reply_source_link": bool(media.get("noon_reply_source_link", True)),
+    }
+
+
+def _style_reference_posts_from_config() -> list[str]:
+    conf = _load_config_map()
+    generation = conf.get("generation", {}) or {}
+    refs = generation.get("style_reference_posts", [])
+    return refs if isinstance(refs, list) else []
+
+
+def _pdf_knowledge_for_prompt(slot_name: str, max_docs: int = 3, max_chars_per_doc: int = 600) -> list[str]:
+    try:
+        return get_pdf_knowledge_snippets(
+            max_docs=max_docs,
+            max_chars_per_doc=max_chars_per_doc,
+            slot_name=slot_name,
+        )
+    except Exception:
+        return []
+
+
+def _safe_media_url(path: str) -> str:
+    p = Path(path).resolve()
+    if ROOT.resolve() not in p.parents and p != ROOT.resolve():
+        raise ValueError("invalid media path")
+    rel = p.relative_to(ROOT.resolve())
+    return f"/api/media/{rel.as_posix()}"
+
+
+def _semantic_domain_guard(topic: str, text: str) -> tuple[bool, str]:
+    """
+    Detect obvious domain drift for this account's core domain (design/AI).
+    Returns (ok, reason).
+    """
+    t = topic.lower()
+    body = text.lower()
+
+    # Special guard: 「余白」 is often mis-generated as life-hack/time-management.
+    if "余白" in topic:
+        design_signals = ["レイアウト", "タイポ", "余白", "可読性", "視線", "情報設計", "ui", "ux", "グリッド"]
+        lifehack_signals = ["時間管理", "朝活", "タスク", "生産性", "一日", "習慣", "日常"]
+        has_design = any(k in text for k in design_signals)
+        has_lifehack = any(k in text for k in lifehack_signals)
+        if has_lifehack and not has_design:
+            return (False, "余白テーマが生活ハック文脈へ逸脱しています。デザイン文脈に固定してください。")
+
+    # Generic guard: when topic mentions design/AI, avoid generic self-help tone only.
+    if any(k in t for k in ["デザイン", "ui", "ux", "ai", "余白", "配色", "タイポ"]):
+        domain_signals = ["デザイン", "ui", "ux", "レイアウト", "可読性", "情報設計", "配色", "タイポ", "ai", "モデル", "運用"]
+        if not any(k in body for k in domain_signals):
+            return (False, "投稿が専門ドメイン要素を欠いています。")
+    return (True, "")
+
+
+def _load_queue() -> list[dict]:
+    if not QUEUE_PATH.exists():
+        return []
+    try:
+        data = yaml.safe_load(QUEUE_PATH.read_text(encoding="utf-8")) or []
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_queue(items: list[dict]) -> None:
+    QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    QUEUE_PATH.write_text(yaml.safe_dump(items, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def _weekday_key(d: date) -> str:
+    keys = [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+    ]
+    return keys[d.weekday()]
+
+
+def _days_from_unit(unit: str, count: int) -> int:
+    if unit == "days":
+        return count
+    if unit == "weeks":
+        return count * 7
+    if unit == "months":
+        return count * 30
+    return count
+
+
+def _max_count_by_unit(unit: str) -> int:
+    if unit == "days":
+        return 31
+    return 12
+
+
+def _fallback_plan_text(slot: str, weekday_theme: str) -> str:
+    if slot == "morning":
+        return f"{weekday_theme}。朝枠は学び重視で、保存したくなる実務示唆を1本投稿。"
+    if slot == "noon":
+        return (
+            "今日の要点は、AI導入で差が出るのはツール数より運用設計。\n"
+            "まず1工程だけ小さく自動化して、工数差を比較します。\n"
+            "#AI活用 #デザイン #業務改善"
+        )
+    return "夕方は共感ベースで1本。冷静に振り返れる短文で、明日に繋がる行動提案を入れる。"
+
+
+def _jit_noon_placeholder(minutes_before: int) -> str:
+    return (
+        "【投稿直前生成】この枠は最新AI情報を投稿時刻の直前に収集して作成します。\n"
+        f"- 収集タイミング: 投稿予定の約{minutes_before}分前\n"
+        "- 選定方針: 動画付き > 画像付き > テキスト\n"
+        "- 仕上げ: リンクなしで要点をブラッシュアップ"
+    )
+
+
+MORNING_EVERGREEN_TOPICS = [
+    {
+        "title": "余白は“飾り”ではなく情報設計",
+        "insight": "詰め込みすぎると理解コストが上がり、離脱が増える。",
+        "action": "要素を1つ減らし、余白を8pxだけ増やして比較する。",
+        "tags": "#デザイン基礎 #UIデザイン #情報設計",
+    },
+    {
+        "title": "フォント選定は可読性が先",
+        "insight": "雰囲気より本文サイズ・行間・字間の整合で読みやすさが決まる。",
+        "action": "本文14-16pxで2パターンを並べ、30秒読了率を確認する。",
+        "tags": "#タイポグラフィ #デザイン基礎 #UX",
+    },
+    {
+        "title": "色は“意味”で使う",
+        "insight": "色数が多いほど迷いが増え、重要情報が埋もれやすい。",
+        "action": "強調色を1色に絞り、注意/成功/補助の役割を定義する。",
+        "tags": "#配色 #デザイン基礎 #UI設計",
+    },
+    {
+        "title": "視線誘導はサイズ差より順序設計",
+        "insight": "大きい文字だけでは読ませたい順は作れない。",
+        "action": "見出し→補足→CTAの順にコントラストを付けて再配置する。",
+        "tags": "#レイアウト #デザイン基礎 #視線設計",
+    },
+    {
+        "title": "写真は品質より役割一致",
+        "insight": "綺麗な写真でも文脈とズレると体験が弱くなる。",
+        "action": "感情訴求用か情報補足用かを先に決めてから差し替える。",
+        "tags": "#ビジュアル設計 #デザイン応用 #UX",
+    },
+    {
+        "title": "グリッドは自由を制限するためではない",
+        "insight": "揃える基準があるほど、崩す意図が伝わる。",
+        "action": "8ptグリッドで一度整列し、意図的に崩す1箇所を決める。",
+        "tags": "#グリッド #デザイン基礎 #実務",
+    },
+    {
+        "title": "“しっくりこない”は言語化不足",
+        "insight": "違和感の理由を言葉にできると改善スピードが上がる。",
+        "action": "迷った画面で『何が惜しいか』を3行メモしてから修正する。",
+        "tags": "#デザイン思考 #デザイン豆知識 #制作フロー",
+    },
+    {
+        "title": "マイクロコピーは体験の最後の設計",
+        "insight": "ボタン文言1つで迷いと離脱は大きく変わる。",
+        "action": "CTA文言を『する』から『得られる結果』に書き換えてAB比較する。",
+        "tags": "#UXライティング #デザイン応用 #CV改善",
+    },
+]
+
+
+def _morning_evergreen_post(index: int) -> str:
+    t = MORNING_EVERGREEN_TOPICS[index % len(MORNING_EVERGREEN_TOPICS)]
+    return (
+        f"🔍 {t['title']}\n\n"
+        f"・{t['insight']}\n"
+        "・意外とここを整えるだけで、見やすさと信頼感は変わります。\n\n"
+        f"まずは {t['action']}\n\n"
+        f"{t['tags']}"
+    )
+
+
+EVENING_ARUARU_TOPICS = [
+    {
+        "title": "修正依頼が3件同時に来る夕方",
+        "body": "優先順位を決める5分が、だいたい一番効く。\n先に“今日やる1件”を固定すると、気持ちがだいぶ落ち着きます。",
+        "tags": "#デザイナーあるある #制作現場 #仕事術",
+    },
+    {
+        "title": "『なんか違う』と言われたとき",
+        "body": "言語化が難しい日はありますよね。\n責めるより、まず基準を一緒に揃えると前に進みやすいです。",
+        "tags": "#デザインあるある #コミュニケーション #デザイン実務",
+    },
+    {
+        "title": "締切前ほど細部が気になる",
+        "body": "最後の30分で1pxを追い続ける現象、わりとみんな通る道。\n今日は“直す理由が言える1箇所だけ”に絞るのも手です。",
+        "tags": "#デザイナーあるある #UIデザイン #制作フロー",
+    },
+    {
+        "title": "良い案ほど最初は伝わりにくい",
+        "body": "熱量が先行して、説明が追いつかないことがある。\n図を1枚足すだけで、空気が変わることあります。",
+        "tags": "#仕事あるある #提案資料 #デザイン思考",
+    },
+    {
+        "title": "疲れてる日に限って判断が増える",
+        "body": "そんな日は“決めない勇気”も大事。\n明日の自分が判断しやすいように、論点だけメモして終えるのもありです。",
+        "tags": "#デザイン現場 #仕事あるある #継続改善",
+    },
+]
+
+
+def _evening_aruaru_post(index: int) -> str:
+    t = EVENING_ARUARU_TOPICS[index % len(EVENING_ARUARU_TOPICS)]
+    return f"{t['title']}\n\n{t['body']}\n\n{t['tags']}"
+
+
+EVENING_FALLBACK_VARIANTS = [
+    (
+        "今日は小さな改善を1つ残せたら十分です。\n"
+        "明日に渡すメモを1行だけ書いて終わりにします。\n\n"
+        "#デザイン #制作フロー #継続改善"
+    ),
+    (
+        "手が止まる日は、無理に進めないほうがうまくいくことがあります。\n"
+        "判断だけ先にメモして、作業は明日の自分に渡すのも手です。\n\n"
+        "#デザイン実務 #仕事術 #継続改善"
+    ),
+    (
+        "夕方の修正は、勢いより優先順位が効きます。\n"
+        "今日は『直す理由が言える1箇所』だけ整えて締めます。\n\n"
+        "#デザイン #制作現場 #仕事あるある"
+    ),
+    (
+        "うまく進まない日は、設計が悪いのではなく疲れているだけのこともあります。\n"
+        "まずは論点を2つに絞って、続きは明日に回す判断もありです。\n\n"
+        "#デザイン現場 #仕事術 #制作フロー"
+    ),
+    (
+        "完璧に終わらない日があっても大丈夫です。\n"
+        "今日は『次に迷わないメモ』を残せたら、それで十分。\n\n"
+        "#デザイン #継続改善 #仕事あるある"
+    ),
+]
+
+
+def _evening_fallback_post(d: date) -> str:
+    idx = d.toordinal() % len(EVENING_FALLBACK_VARIANTS)
+    return EVENING_FALLBACK_VARIANTS[idx]
+
+
+def _rotated_items(items: list, seed: int, take: int = 8) -> list:
+    if not items:
+        return []
+    n = len(items)
+    start = seed % n
+    ordered = items[start:] + items[:start]
+    return ordered[: min(take, len(ordered))]
+
+
+def _unique_or_fallback(
+    text: str,
+    slot: str,
+    d: date,
+    weekday_theme: str,
+    memory: MemoryStore,
+    local_fp: set[str],
+) -> str:
+    candidate = text.strip()
+    if candidate and not is_duplicate(candidate, memory):
+        from src.x_autopost_tool.uniqueness import fingerprint
+
+        fp = fingerprint(candidate)
+        if fp not in local_fp:
+            local_fp.add(fp)
+            return candidate
+
+    if slot == "morning":
+        candidate = (
+            f"🔍 デザイン基礎の振り返り（{d.isoformat()}）\n\n"
+            "・情報を足す前に、要素の役割を整理する\n"
+            "・迷ったら余白とタイポの一貫性を先に確認する\n\n"
+            "まずは直近の画面を1つだけ、目的ベースで再配置して比較。\n"
+            "#デザイン基礎 #UIデザイン #デザイン思考"
+        )
+    elif slot == "noon":
+        candidate = _jit_noon_placeholder(30)
+    else:
+        candidate = _evening_fallback_post(d)
+        if is_duplicate(candidate, memory):
+            for i in range(len(EVENING_FALLBACK_VARIANTS)):
+                alt = EVENING_FALLBACK_VARIANTS[(d.toordinal() + i + 1) % len(EVENING_FALLBACK_VARIANTS)]
+                if not is_duplicate(alt, memory):
+                    candidate = alt
+                    break
+    from src.x_autopost_tool.uniqueness import fingerprint
+
+    local_fp.add(fingerprint(candidate))
+    return candidate
+
+
+@app.get("/api/env")
+def api_get_env():
+    env_map = _load_env_map()
+    payload = {}
+    for key in ENV_KEYS:
+        value = env_map.get(key, "")
+        payload[key] = {"is_set": bool(value), "masked": _mask_secret(value)}
+    return jsonify({"ok": True, "env": payload})
+
+
+@app.post("/api/env")
+def api_save_env():
+    if not request.is_json:
+        return jsonify({"ok": False, "message": "JSONで送信してください。"}), 400
+
+    incoming = request.json.get("env", {})
+    if not isinstance(incoming, dict):
+        return jsonify({"ok": False, "message": "envはオブジェクト形式で指定してください。"}), 400
+
+    env_map = _load_env_map()
+    for key in ENV_KEYS:
+        if key not in incoming:
+            continue
+        value = str(incoming.get(key, "")).strip()
+        if value:
+            env_map[key] = value
+            os.environ[key] = value
+        elif key in env_map:
+            # 空文字を送ると削除
+            env_map.pop(key, None)
+            os.environ.pop(key, None)
+
+    _save_env_map(env_map)
+    return jsonify({"ok": True, "message": ".env を保存しました。"})
+
+
+@app.get("/api/media_config")
+def api_get_media_config():
+    return jsonify({"ok": True, "media": _load_media_config()})
+
+
+@app.post("/api/media_config")
+def api_save_media_config():
+    if not request.is_json:
+        return jsonify({"ok": False, "message": "JSONで送信してください。"}), 400
+    incoming = request.json.get("media", {})
+    if not isinstance(incoming, dict):
+        return jsonify({"ok": False, "message": "mediaはオブジェクト形式で指定してください。"}), 400
+
+    conf = _load_config_map()
+    media = conf.get("media", {}) or {}
+    media["enabled"] = bool(incoming.get("enabled", media.get("enabled", False)))
+    media["morning_generate_image"] = bool(
+        incoming.get("morning_generate_image", media.get("morning_generate_image", False))
+    )
+    media["morning_image_provider"] = str(
+        incoming.get("morning_image_provider", media.get("morning_image_provider", "nanobanana_cmd"))
+    ).strip() or "nanobanana_cmd"
+    media["morning_image_output_dir"] = str(
+        incoming.get("morning_image_output_dir", media.get("morning_image_output_dir", "generated_media"))
+    ).strip() or "generated_media"
+    media["noon_reply_source_link"] = bool(
+        incoming.get("noon_reply_source_link", media.get("noon_reply_source_link", True))
+    )
+    conf["media"] = media
+    _save_config_map(conf)
+    return jsonify({"ok": True, "message": "media設定を保存しました。", "media": media})
+
+
+@app.get("/api/pdf_library")
+def api_get_pdf_library():
+    docs = load_pdf_index()
+    return jsonify({"ok": True, "docs": docs})
+
+
+@app.post("/api/pdf_library/upload")
+def api_upload_pdf():
+    file = request.files.get("pdf")
+    if not file:
+        return jsonify({"ok": False, "message": "PDFファイルを選択してください。"}), 400
+    name = (file.filename or "").strip()
+    if not name.lower().endswith(".pdf"):
+        return jsonify({"ok": False, "message": "PDFのみアップロードできます。"}), 400
+    try:
+        content = file.read()
+        if not content:
+            return jsonify({"ok": False, "message": "空のファイルです。"}), 400
+        doc = ingest_pdf_bytes(content, original_name=name)
+        return jsonify({"ok": True, "message": "PDFをストックしました。", "doc": doc, "docs": load_pdf_index()})
+    except Exception as e:
+        return jsonify({"ok": False, "message": f"PDF取り込みエラー: {e}"}), 400
+
+
+@app.delete("/api/pdf_library/<doc_id>")
+def api_delete_pdf(doc_id: str):
+    ok = delete_pdf_doc(doc_id)
+    if not ok:
+        return jsonify({"ok": False, "message": "対象PDFが見つかりません。"}), 404
+    return jsonify({"ok": True, "message": "PDFを削除しました。", "docs": load_pdf_index()})
+
+
+@app.post("/api/pdf_library/settings")
+def api_update_pdf_settings():
+    if not request.is_json:
+        return jsonify({"ok": False, "message": "JSONで送信してください。"}), 400
+    doc_id = str(request.json.get("doc_id", "")).strip()
+    if not doc_id:
+        return jsonify({"ok": False, "message": "doc_id を指定してください。"}), 400
+    try:
+        priority = int(request.json.get("priority", 3))
+    except Exception:
+        priority = 3
+    scope = str(request.json.get("scope", "all")).strip().lower()
+    if scope not in {"all", "morning"}:
+        return jsonify({"ok": False, "message": "scope は all / morning を指定してください。"}), 400
+    updated = update_pdf_doc_settings(doc_id, priority=priority, scope=scope)
+    if updated is None:
+        return jsonify({"ok": False, "message": "対象PDFが見つかりません。"}), 404
+    return jsonify({"ok": True, "message": "PDF設定を更新しました。", "doc": updated, "docs": load_pdf_index()})
+
+
+@app.post("/api/draft_lab_generate")
+def api_draft_lab_generate():
+    if not request.is_json:
+        return jsonify({"ok": False, "message": "JSONで送信してください。"}), 400
+
+    topic = str(request.json.get("topic", "")).strip()
+    slot = str(request.json.get("slot", "morning")).strip()
+    if not topic:
+        return jsonify({"ok": False, "message": "テーマ/キーワードを入力してください。"}), 400
+    if slot not in {"morning", "noon", "evening"}:
+        slot = "morning"
+    if not os.getenv("OPENAI_API_KEY"):
+        return jsonify({"ok": False, "message": "OPENAI_API_KEY が未設定です。"}), 400
+
+    slot_spec = {
+        "morning": "170-280文字。基礎・応用・豆知識で有益、保存したくなる内容。",
+        "noon": "90-180文字。最新情報シェア想定、要点だけ、リンクなし。",
+        "evening": "110-220文字。共感ベースでゆるめ。デザイナーあるある・仕事あるある。",
+    }[slot]
+    slot_extra = (
+        "- デザイナーあるある・仕事あるあるの小さな情景を1つ入れる\n"
+        "- 読者が『わかる』と思える共感優先。教訓の押し付けはしない\n"
+        "- 攻撃的/煽り口調は禁止。やさしい締めにする\n"
+    ) if slot == "evening" else ""
+    style_refs = _style_reference_posts_from_config()
+    pdf_knowledge = _pdf_knowledge_for_prompt(slot_name=slot, max_docs=3, max_chars_per_doc=550)
+
+    prompt = (
+        "以下の条件でX投稿文を1本だけ作成してください。\n"
+        f"- スロット: {slot}\n"
+        f"- 文字数: {slot_spec}\n"
+        "- アカウント軸: AI とデザインの実務知見\n"
+        "- 最初にテーマの定義を1行で固定し、最後まで同じ意味で使う\n"
+        "- 比喩で別領域へ飛ばさない（例: デザイン用語を生活ハック化しない）\n"
+        "- 冷静さの中に僅かなカジュアルさ\n"
+        "- 改行で2-4段落、必要なら短い箇条書き1-3項目\n"
+        "- 絵文字は0-2個\n"
+        "- ハッシュタグは文末に2-3個\n"
+        "- ハッシュタグは本文の最後から2回改行して、独立した1行で配置\n"
+        "- 「デザイナーあるある:」「豆知識:」「基礎:」「応用:」のような説明ラベルは書かない\n"
+        "- 語尾は「〜だ。」を避け、「です。」または体言止め（例: 〜が肝心。）を混ぜる\n"
+        "- URLは本文に含めない\n"
+        f"- 文体参照（過去投稿サンプル）: {json.dumps(style_refs[:6], ensure_ascii=False)}\n"
+        f"- PDFストック知見（参考）: {json.dumps(pdf_knowledge, ensure_ascii=False)}\n"
+        "- 最新性が必要な内容はニュース/X由来を優先し、PDFは基礎知識や補足説明に使う\n"
+        "- 上のサンプルの改行リズム・語尾の温度感・言葉選びを優先して合わせる\n"
+        f"{slot_extra}"
+        f"- テーマ: {topic}\n\n"
+        'JSONで返す: {"text":"...","reason":"..."}'
+    )
+
+    try:
+        res = _openai_client().responses.create(
+            model="gpt-4.1-mini",
+            input=[
+                {"role": "system", "content": "あなたはX運用の編集者です。"},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        data = json.loads(res.output_text)
+        text = normalize_x_post_text(str(data.get("text", "")).strip(), slot_name=slot)
+        reason = str(data.get("reason", "")).strip()
+        if not text:
+            return jsonify({"ok": False, "message": "投稿文の生成結果が空でした。"}), 400
+        ok, why = _semantic_domain_guard(topic, text)
+        if not ok:
+            repair_prompt = (
+                "次の投稿文を、意味破綻を直して1本に書き直してください。\n"
+                f"- 元テーマ: {topic}\n"
+                f"- 修正理由: {why}\n"
+                "- テーマ語の意味を固定する\n"
+                "- 本文は日本語、改行2-4段落、必要なら短い箇条書き\n"
+                "- ハッシュタグ2-3個、URLなし\n\n"
+                f"元文:\n{text}\n\n"
+                'JSONで返す: {"text":"...","reason":"..."}'
+            )
+            repaired = _openai_client().responses.create(
+                model="gpt-4.1-mini",
+                input=[
+                    {"role": "system", "content": "あなたはX運用の編集者です。"},
+                    {"role": "user", "content": repair_prompt},
+                ],
+            )
+            d2 = json.loads(repaired.output_text)
+            text2 = normalize_x_post_text(str(d2.get("text", "")).strip(), slot_name=slot)
+            reason2 = str(d2.get("reason", "")).strip() or reason
+            if text2:
+                text = text2
+                reason = f"{reason2} / semantic-fix"
+        return jsonify({"ok": True, "text": text, "reason": reason})
+    except Exception as e:
+        return jsonify({"ok": False, "message": f"投稿文生成エラー: {e}"}), 400
+
+
+@app.post("/api/generate_image")
+def api_generate_image():
+    if not request.is_json:
+        return jsonify({"ok": False, "message": "JSONで送信してください。"}), 400
+    text = str(request.json.get("text", "")).strip()
+    visual_mode = str(request.json.get("visual_mode", "auto")).strip() or "auto"
+    if not text:
+        return jsonify({"ok": False, "message": "投稿文が空です。"}), 400
+    conf = _load_media_config()
+    provider = str(conf.get("morning_image_provider", "nanobanana_cmd")).strip() or "nanobanana_cmd"
+    if provider == "nanobanana_cmd":
+        tpl = (os.getenv("NANOBANANA_CMD_TEMPLATE") or "").strip()
+        if not tpl:
+            return jsonify({"ok": False, "message": "NANOBANANA_CMD_TEMPLATE が未設定です。"}), 400
+        try:
+            parts = shlex.split(tpl)
+        except Exception:
+            return jsonify({"ok": False, "message": "NANOBANANA_CMD_TEMPLATE の書式が不正です。"}), 400
+        if not parts:
+            return jsonify({"ok": False, "message": "NANOBANANA_CMD_TEMPLATE が空です。"}), 400
+        cmd = parts[0]
+        if not shutil.which(cmd):
+            return jsonify(
+                {
+                    "ok": False,
+                    "message": f"Nano Banana CLI が見つかりません: `{cmd}`。インストール後に再実行してください。",
+                }
+            ), 400
+    elif provider == "freepik_mystic":
+        if not (os.getenv("FREEPIK_API_KEY") or "").strip():
+            return jsonify({"ok": False, "message": "FREEPIK_API_KEY が未設定です。"}), 400
+    else:
+        return jsonify({"ok": False, "message": f"未対応プロバイダです: {provider}"}), 400
+
+    output_dir = conf.get("morning_image_output_dir") or "generated_media"
+    try:
+        output = None
+        used_mode = visual_mode
+        err_detail = ""
+        retries = 3
+        for i in range(retries):
+            if provider == "freepik_mystic":
+                out, mode, err = generate_image_with_freepik_mystic(text, str(output_dir), visual_mode=visual_mode)
+            else:
+                out, mode, err = generate_image_with_nanobanana(text, str(output_dir), visual_mode=visual_mode)
+            output, used_mode, err_detail = out, mode, err
+            if output:
+                break
+            detail_lower = (err_detail or "").lower()
+            transient = any(k in detail_lower for k in ["503", "unavailable", "high demand", "try again later"])
+            if not transient or i == retries - 1:
+                break
+            # Exponential backoff: 2s, 4s, 8s
+            time.sleep(2 ** (i + 1))
+
+        if not output:
+            detail = (err_detail or "").strip()
+            if len(detail) > 300:
+                detail = detail[:300] + "..."
+            low = detail.lower()
+            transient = any(k in low for k in ["503", "unavailable", "high demand", "try again later"])
+            retry_after_sec = 600 if transient else 0
+            status = 503 if transient else 400
+            return jsonify(
+                {
+                    "ok": False,
+                    "message": (
+                        "画像生成に失敗しました。"
+                        + (f" 詳細: {detail}" if detail else "NANOBANANA_CMD_TEMPLATE と CLI 実行可否を確認してください。")
+                    ),
+                    "retry_after_sec": retry_after_sec,
+                }
+            ), status
+        return jsonify({"ok": True, "path": output, "url": _safe_media_url(output), "visual_mode": used_mode})
+    except Exception as e:
+        return jsonify({"ok": False, "message": f"画像生成エラー: {e}"}), 400
+
+
+@app.get("/api/media/<path:relpath>")
+def api_media_file(relpath: str):
+    target = (ROOT / relpath).resolve()
+    root_resolved = ROOT.resolve()
+    if root_resolved not in target.parents:
+        return jsonify({"ok": False, "message": "invalid path"}), 400
+    return send_from_directory(str(target.parent), target.name)
+
+
+@app.post("/api/plan_preview")
+def api_plan_preview():
+    if not request.is_json:
+        return jsonify({"ok": False, "message": "JSONで送信してください。"}), 400
+    if not CONFIG_PATH.exists():
+        return jsonify({"ok": False, "message": "config.yaml がありません。"}), 400
+
+    unit = str(request.json.get("unit", "days"))
+    count = int(request.json.get("count", 7))
+    every_day = bool(request.json.get("every_day", True))
+    start_date_str = str(request.json.get("start_date", date.today().isoformat()))
+    start_date = date.fromisoformat(start_date_str)
+
+    if unit not in {"days", "weeks", "months"}:
+        return jsonify({"ok": False, "message": "unitは days/weeks/months"}), 400
+    max_count = _max_count_by_unit(unit)
+    if count < 1 or count > max_count:
+        return jsonify({"ok": False, "message": f"{unit} のcountは1〜{max_count}で指定してください。"}), 400
+
+    config = load_config(str(CONFIG_PATH))
+    memory = load_memory(config.uniqueness_memory_path)
+    total_days = _days_from_unit(unit, count)
+    slots = config.required_daily_slots or ["morning", "noon", "evening"]
+    items = fetch_rss_items(config.rss_feeds, max_items=config.max_input_items)
+    items = filter_blocked(items, config.blocked_keywords)
+
+    plan = []
+    local_fp: set[str] = set()
+    morning_idx = 0
+    evening_idx = 0
+
+    for i in range(total_days):
+        d = start_date + timedelta(days=i)
+        if not every_day and d.weekday() >= 5:
+            continue
+        weekday = _weekday_key(d)
+        weekday_theme = config.weekly_themes.get(weekday, "通常テーマ")
+
+        for slot in slots:
+            slot_profile = config.slot_profiles.get(slot, {})
+            slot_style = str(slot_profile.get("style", "通常枠"))
+            slot_min_chars = int(slot_profile.get("min_chars", config.min_post_chars))
+            slot_max_chars = int(slot_profile.get("max_chars", config.max_post_chars))
+            slot_time = str(slot_profile.get("time", "09:00"))
+            latest_share_mode = bool(slot_profile.get("latest_share_mode", True if slot == "noon" else False))
+            latest_capture_minutes = int(slot_profile.get("latest_capture_minutes_before", 30))
+            slot_pdf_knowledge = _pdf_knowledge_for_prompt(slot_name=slot, max_docs=3, max_chars_per_doc=700)
+
+            if slot == "morning":
+                picked = None
+                for k in range(len(MORNING_EVERGREEN_TOPICS)):
+                    candidate = _morning_evergreen_post(morning_idx + k)
+                    if not is_duplicate(candidate, memory):
+                        from src.x_autopost_tool.uniqueness import fingerprint
+
+                        fp = fingerprint(candidate)
+                        if fp not in local_fp:
+                            local_fp.add(fp)
+                            picked = candidate
+                            break
+                if not picked:
+                    picked = _unique_or_fallback("", "morning", d, weekday_theme, memory, local_fp)
+                text = picked
+                morning_idx += 1
+                plan.append(
+                    {
+                        "date": d.isoformat(),
+                        "time": slot_time,
+                        "slot": slot,
+                        "theme": "デザイン基礎/応用（普遍）",
+                        "text": text,
+                        "refresh_mode": "",
+                    }
+                )
+                continue
+
+            if slot == "evening":
+                picked = None
+                for k in range(len(EVENING_ARUARU_TOPICS)):
+                    candidate = _evening_aruaru_post(evening_idx + k)
+                    if not is_duplicate(candidate, memory):
+                        from src.x_autopost_tool.uniqueness import fingerprint
+
+                        fp = fingerprint(candidate)
+                        if fp not in local_fp:
+                            local_fp.add(fp)
+                            picked = candidate
+                            break
+                if not picked:
+                    picked = _unique_or_fallback("", "evening", d, weekday_theme, memory, local_fp)
+                text = picked
+                evening_idx += 1
+                plan.append(
+                    {
+                        "date": d.isoformat(),
+                        "time": slot_time,
+                        "slot": slot,
+                        "theme": "共感/あるある（ゆるめ）",
+                        "text": text,
+                        "refresh_mode": "",
+                    }
+                )
+                continue
+
+            if slot == "noon" and latest_share_mode:
+                text = _jit_noon_placeholder(latest_capture_minutes)
+            else:
+                text = ""
+                if items and os.getenv("OPENAI_API_KEY"):
+                    for attempt in range(4):
+                        subset = _rotated_items(items, seed=(i * 7 + attempt * 3), take=8)
+                        try:
+                            drafts = build_post_drafts(
+                                model=config.model,
+                                items=subset,
+                                tone=config.tone,
+                                audience=config.audience,
+                                prediction_horizon=config.prediction_horizon,
+                                post_style_template=config.post_style_template,
+                                voice_guide=config.voice_guide,
+                                style_reference_posts=config.style_reference_posts,
+                                weekday_theme=weekday_theme,
+                                slot_name=slot,
+                                slot_style=slot_style,
+                                slot_min_chars=slot_min_chars,
+                                slot_max_chars=slot_max_chars,
+                                max_posts=3,
+                                knowledge_snippets=slot_pdf_knowledge,
+                            )
+                            unique = None
+                            for dft in drafts:
+                                if not is_duplicate(dft.text, memory):
+                                    from src.x_autopost_tool.uniqueness import fingerprint
+
+                                    fp = fingerprint(dft.text)
+                                    if fp not in local_fp:
+                                        local_fp.add(fp)
+                                        unique = dft.text
+                                        break
+                            if unique:
+                                text = unique
+                                break
+                        except Exception:
+                            continue
+                if not text:
+                    text = _unique_or_fallback(_fallback_plan_text(slot, weekday_theme), slot, d, weekday_theme, memory, local_fp)
+
+            plan.append(
+                {
+                    "date": d.isoformat(),
+                    "time": slot_time,
+                    "slot": slot,
+                    "theme": weekday_theme,
+                    "text": text,
+                    "refresh_mode": "jit_noon" if (slot == "noon" and latest_share_mode) else "",
+                }
+            )
+
+    return jsonify({"ok": True, "count": len(plan), "plan": plan})
+
+
+@app.get("/api/target_account")
+def api_get_target_account():
+    conf = _load_config_map()
+    handle = str(conf.get("profile", {}).get("account_handle", "")).strip()
+    return jsonify({"ok": True, "account_handle": handle})
+
+
+@app.post("/api/target_account")
+def api_set_target_account():
+    if not request.is_json:
+        return jsonify({"ok": False, "message": "JSONで送信してください。"}), 400
+    handle = str(request.json.get("account_handle", "")).strip()
+    if not handle:
+        return jsonify({"ok": False, "message": "account_handle を入力してください。"}), 400
+    if not handle.startswith("@"):
+        handle = f"@{handle}"
+
+    conf = _load_config_map()
+    profile = conf.get("profile", {}) or {}
+    profile["account_handle"] = handle
+    conf["profile"] = profile
+    _save_config_map(conf)
+    return jsonify({"ok": True, "account_handle": handle, "message": "運用対象アカウントを保存しました。"})
+
+
+@app.post("/api/verify_target_account")
+def api_verify_target_account():
+    if not request.is_json:
+        return jsonify({"ok": False, "message": "JSONで送信してください。"}), 400
+    handle = str(request.json.get("account_handle", "")).strip()
+    if not handle:
+        return jsonify({"ok": False, "message": "account_handle を入力してください。"}), 400
+    username = handle[1:] if handle.startswith("@") else handle
+
+    def _ok_payload(user):
+        metrics = user.public_metrics or {}
+        return {
+            "ok": True,
+            "username": user.username,
+            "name": user.name,
+            "followers": metrics.get("followers_count", 0),
+            "tweet_count": metrics.get("tweet_count", 0),
+            "verified": bool(getattr(user, "verified", False)),
+        }
+
+    # 1) bearer token で確認
+    bearer = os.getenv("X_BEARER_TOKEN")
+    if bearer:
+        try:
+            read_client = tweepy.Client(bearer_token=bearer, wait_on_rate_limit=True)
+            res = read_client.get_user(username=username, user_fields=["public_metrics", "verified"])
+            if res and res.data:
+                return jsonify(_ok_payload(res.data))
+        except Exception:
+            # bearerで失敗した場合は user auth へフォールバック
+            pass
+
+    # 2) user auth で確認（X_API_KEY など）
+    try:
+        res = _x_client().get_user(username=username, user_fields=["public_metrics", "verified"], user_auth=True)
+        if not res or not res.data:
+            return jsonify({"ok": False, "message": "該当アカウントが見つかりませんでした。"}), 404
+        return jsonify(_ok_payload(res.data))
+    except Exception as e:
+        return jsonify(
+            {
+                "ok": False,
+                "message": (
+                    "アカウント確認エラー: 403が続く場合、X Developer Portalで"
+                    "同一Project配下のAppキー/トークン（Bearer, API Key, Access Token）を再発行して設定してください。"
+                    f" 詳細: {e}"
+                ),
+            }
+        ), 400
+
+
+@app.get("/api/queue")
+def api_get_queue():
+    return jsonify({"ok": True, "queue": _load_queue()})
+
+
+@app.post("/api/queue")
+def api_save_queue():
+    if not request.is_json:
+        return jsonify({"ok": False, "message": "JSONで送信してください。"}), 400
+    queue = request.json.get("queue", [])
+    if not isinstance(queue, list):
+        return jsonify({"ok": False, "message": "queueは配列で指定してください。"}), 400
+
+    conf = load_config(str(CONFIG_PATH)) if CONFIG_PATH.exists() else None
+    memory = load_memory(conf.uniqueness_memory_path) if conf else load_memory("post_memory.yaml")
+    normalized = []
+    for item in queue:
+        if not isinstance(item, dict):
+            continue
+        schedule_at = str(item.get("schedule_at", "")).strip()
+        slot = str(item.get("slot", "")).strip()
+        theme = str(item.get("theme", "")).strip()
+        text = str(item.get("text", "")).strip()
+        refresh_mode = str(item.get("refresh_mode", "")).strip()
+        allow_empty_text = refresh_mode == "jit_noon"
+        if not schedule_at or not slot or (not text and not allow_empty_text):
+            continue
+        normalized.append(
+            {
+                "schedule_at": schedule_at,
+                "slot": slot,
+                "theme": theme,
+                "text": text,
+                "source_tweet_id": str(item.get("source_tweet_id", "")).strip(),
+                "source_author": str(item.get("source_author", "")).strip(),
+                "last_refreshed_at": str(item.get("last_refreshed_at", "")).strip(),
+                "refresh_mode": refresh_mode,
+            }
+        )
+
+    _save_queue(normalized)
+    for item in normalized:
+        if str(item.get("refresh_mode", "")).strip() == "jit_noon":
+            continue
+        register_text(str(item.get("text", "")), memory)
+    save_memory(memory)
+    return jsonify({"ok": True, "message": f"{len(normalized)}件のキューを保存しました。"})
+
+
+@app.get("/")
+def index():
+    return send_from_directory(UI_DIR, "index.html")
+
+
+@app.get("/api/account")
+def api_account():
+    missing = [k for k in ACCOUNT_REQUIRED_KEYS if not os.getenv(k)]
+    if missing:
+        return jsonify({"ok": False, "missing": missing, "message": "環境変数が不足しています。"}), 400
+
+    try:
+        me = _x_client().get_me(user_auth=True, user_fields=["username", "name", "public_metrics"])
+        if not me or not me.data:
+            return jsonify({"ok": False, "message": "Xアカウント情報を取得できませんでした。"}), 400
+        user = me.data
+        metrics = user.public_metrics or {}
+        return jsonify(
+            {
+                "ok": True,
+                "username": user.username,
+                "name": user.name,
+                "followers": metrics.get("followers_count", 0),
+                "following": metrics.get("following_count", 0),
+                "tweet_count": metrics.get("tweet_count", 0),
+            }
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "message": f"X連動エラー: {e}"}), 400
+
+
+@app.post("/api/run_dry")
+def api_run_dry():
+    slot = request.json.get("slot", "morning") if request.is_json else "morning"
+    if slot not in {"morning", "noon", "evening"}:
+        return jsonify({"ok": False, "message": "slotは morning/noon/evening のみ"}), 400
+
+    if not CONFIG_PATH.exists():
+        return jsonify({"ok": False, "message": "config.yaml がありません。config.example.yaml から作成してください。"}), 400
+
+    cmd = [
+        "python3",
+        "-m",
+        "src.x_autopost_tool.main",
+        "--config",
+        str(CONFIG_PATH),
+        "--slot",
+        slot,
+        "run-once",
+    ]
+    proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+    out = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+    return jsonify({"ok": proc.returncode == 0, "slot": slot, "output": out[-12000:]})
+
+
+@app.post("/api/test_post")
+def api_test_post():
+    if request.is_json:
+        text = str(request.json.get("text", "")).strip()
+        source_url = str(request.json.get("source_url", "")).strip()
+        attach_source_reply = bool(request.json.get("attach_source_reply", False))
+        media_path = str(request.json.get("media_path", "")).strip()
+        file = None
+    else:
+        text = str(request.form.get("text", "")).strip()
+        source_url = str(request.form.get("source_url", "")).strip()
+        attach_source_reply = str(request.form.get("attach_source_reply", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        media_path = str(request.form.get("media_path", "")).strip()
+        file = request.files.get("media")
+
+    if not text:
+        return jsonify({"ok": False, "message": "投稿本文が空です。"}), 400
+    if len(text) > 280:
+        return jsonify({"ok": False, "message": f"文字数が280を超えています: {len(text)}"}), 400
+
+    missing = [k for k in ["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET"] if not os.getenv(k)]
+    if missing:
+        return jsonify({"ok": False, "message": f"投稿用キーが不足しています: {', '.join(missing)}"}), 400
+
+    try:
+        resp = None
+        if file and file.filename:
+            upload_dir = DATA_ROOT / "tmp_uploads"
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = Path(file.filename).name
+            suffix = Path(safe_name).suffix
+            stem = Path(safe_name).stem or "upload"
+            local_path = upload_dir / f"{stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}{suffix}"
+            file.save(local_path)
+            media = _x_api_v1().media_upload(filename=str(local_path))
+            resp = _x_client().create_tweet(text=text, media_ids=[media.media_id_string], user_auth=True)
+            try:
+                local_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        elif media_path:
+            p = Path(media_path).resolve()
+            if ROOT.resolve() not in p.parents:
+                return jsonify({"ok": False, "message": "media_path が不正です。"}), 400
+            if not p.exists():
+                return jsonify({"ok": False, "message": "media_path のファイルが存在しません。"}), 400
+            media = _x_api_v1().media_upload(filename=str(p))
+            resp = _x_client().create_tweet(text=text, media_ids=[media.media_id_string], user_auth=True)
+        else:
+            resp = _x_client().create_tweet(text=text, user_auth=True)
+        tweet_id = str(resp.data.get("id")) if resp and resp.data else ""
+        if attach_source_reply and source_url and tweet_id:
+            reply = f"出典メモ: {source_url}"
+            _x_client().create_tweet(text=reply, in_reply_to_tweet_id=tweet_id, user_auth=True)
+        me = _x_client().get_me(user_auth=True, user_fields=["username"])
+        username = me.data.username if me and me.data else ""
+        tweet_url = f"https://x.com/{username}/status/{tweet_id}" if username and tweet_id else ""
+        conf = load_config(str(CONFIG_PATH)) if CONFIG_PATH.exists() else None
+        memory = load_memory(conf.uniqueness_memory_path) if conf else load_memory("post_memory.yaml")
+        register_text(text, memory)
+        save_memory(memory)
+        return jsonify({"ok": True, "tweet_id": tweet_id, "tweet_url": tweet_url, "message": "試験投稿しました。"})
+    except Exception as e:
+        return jsonify({"ok": False, "message": f"試験投稿エラー: {e}"}), 400
+
+
+if __name__ == "__main__":
+    host = os.getenv("HOST", "127.0.0.1")
+    port = int(os.getenv("PORT", "8787"))
+    app.run(host=host, port=port, debug=False, use_reloader=False)

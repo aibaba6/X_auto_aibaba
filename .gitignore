@@ -1,0 +1,8 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+generated_media/
+pdf_library/
+tmp_uploads/
+logs/

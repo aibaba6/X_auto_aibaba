@@ -1,0 +1,158 @@
+profile:
+  language: ja
+  tone: 冷静で実務的。少しカジュアル
+  audience: AIとデザインに関心のある実務者
+  account_handle: '@AbaboDesign'
+sources:
+  rss_feeds:
+  - https://openai.com/news/rss.xml
+  - https://www.theverge.com/rss/ai-artificial-intelligence/index.xml
+  - https://uxdesign.cc/feed
+  x_search_queries:
+  - AI design lang:ja -is:retweet
+  - 生成AI デザイン lang:ja -is:retweet
+  x_noon_queries:
+  - (AI OR 生成AI) lang:ja -is:retweet has:videos
+  - (AI OR 生成AI) lang:ja -is:retweet has:images
+posting:
+  max_posts_per_run: 1
+  enable_quote_posts: true
+  quote_candidates_limit: 10
+  max_quote_posts_per_run: 1
+  force_post_if_no_passed: true
+  dry_run: true
+filters:
+  blocked_keywords:
+  - PR
+  - 広告
+  - Giveaway
+  - 無料配布
+  - 副業
+generation:
+  model: gpt-4.1-mini
+  max_input_items: 20
+  prediction_horizon: 3-6ヶ月
+  voice_guide:
+  - 冷静な観察を先に置く
+  - 1〜3行ごとに改行して読みやすくする
+  - 断定しすぎず、余白を残す
+  - 語尾は「〜だ。」を避ける
+  - 「です。」と体言止めをバランスよく使う
+  - '僅かにカジュアルな言い回しを入れる（例: 〜かも, まずは）'
+  - 'テンプレ感の強い見出し語（事実:, 示唆: など）を本文に直書きしない'
+  post_style_template:
+  - '事実: 最新情報を1文で要約'
+  - '示唆: デザイン実務への影響を1文'
+  - '予測: 3-6ヶ月の変化を1文'
+  - '行動: 今週やる実験を1文'
+  style_reference_posts:
+  - '「もっと良くなる気がするけど、分からない。」
+
+
+    この感覚が出てきたら、それは後退ではなく成長期のサイン。
+
+    迷いは、次のレベルに行く直前でしか生まれない。
+
+    #デザイン #デザイナー'
+  - '「この写真、悪くはないんだけど…」と手が止まる瞬間。
+
+    問題は“質”ではなく“役割”。
+
+
+    ✔ 感情を動かす役か
+
+    ✔ 情報を補足する役か
+
+    #デザイン #写真 #画像'
+  - '「サイズが合ってるからOK」になっていないか？
+
+    画像は内容以前の“信頼の入口”。
+
+
+    ・200%拡大しても破綻しないか
+
+    ・暗部ノイズ、エッジのにじみはないか
+
+    #デザイン #写真'
+quality_gate:
+  min_post_chars: 120
+  max_post_chars: 280
+  require_prediction_keywords:
+  - 予測
+  - 起こる
+  - 3ヶ月
+  - 6ヶ月
+  require_action_keywords:
+  - 今週
+  - 試す
+  - 検証
+  - 実験
+  forbidden_claim_keywords:
+  - 絶対
+  - 100%
+  - 必ず
+  max_hashtags: 3
+quote_rules:
+  min_chars: 40
+  max_chars: 240
+  exclude_if_starts_with_mention: true
+  exclude_if_contains_url: false
+  min_score: 3
+  min_engagement_score: 30
+  prefer_video: true
+  fallback_to_image: true
+  avoid_links_in_comment: true
+  preferred_keywords:
+  - なぜ
+  - 課題
+  - 失敗
+  - 実験
+  - 検証
+media:
+  enabled: true
+  morning_generate_image: true
+  morning_image_provider: freepik_mystic
+  morning_image_output_dir: generated_media
+  morning_retry_on_503: true
+  morning_retry_delay_minutes: 10
+  morning_retry_max_attempts: 3
+  noon_reply_source_link: true
+schedule:
+  cron_like_note: 外部cronで 07:00 / 12:00 / 18:00 実行
+  required_daily_slots:
+  - morning
+  - noon
+  - evening
+  slot_profiles:
+    morning:
+      time: 07:00
+      style: 学びが深く有益。保存したくなる。最新情報を含める。
+      min_chars: 170
+      max_chars: 280
+      posts_per_run: 1
+      enable_quote_posts: false
+    noon:
+      time: '12:00'
+      style: サクッと読める。1メッセージで要点を伝える。
+      min_chars: 90
+      max_chars: 180
+      posts_per_run: 1
+      enable_quote_posts: true
+      latest_share_mode: true
+    evening:
+      time: '18:00'
+      style: '共感ベースでゆるめ。デザイナーあるある・仕事あるある中心。 自分語りしすぎず、読者が「わかる」と感じる小さな情景を入れる。 攻撃的/煽り口調は禁止。最後はやさしい締めで終える。
+
+        '
+      min_chars: 110
+      max_chars: 220
+      posts_per_run: 1
+      enable_quote_posts: true
+  weekly_themes:
+    monday: '速報要約: 先週末〜当日の主要AIニュースを要点整理'
+    tuesday: '実装/制作: AIをデザイン実務に組み込む具体手順'
+    wednesday: '比較検証: 複数ツールや手法の使い分け'
+    thursday: '予測検証: 以前の予測の答え合わせと修正'
+    friday: '戦略視点: 3-6ヶ月の変化と勝ち筋'
+    saturday: 'ケース分析: 良い事例/悪い事例の分解'
+    sunday: '週間まとめ: 来週の実験計画と観測ポイント'
