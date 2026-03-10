@@ -168,9 +168,14 @@ def build_quote_post(model: str, candidate: QuoteCandidate, tone: str, audience:
 
 次の投稿を引用する前提で、引用コメント案を1本作成してください。
 - 日本語80-180文字
+- 投稿内容を肯定的に受け止める
 - 相手への敬意を保つ
-- 具体的な補足視点か反証可能な予測を1つ入れる
+- 原文の要点をなぞるだけで終わらせず、新しい知見・別角度の補足を1つ入れる
+- 今後どう広がるか、3〜6ヶ月の予測を短く1つ入れる
 - URLを本文に含めない
+- 断定しすぎない
+- 2〜4段落で読みやすく改行する
+- ハッシュタグは文末に2〜3個
 - 出力は本文のみ
 
 投稿者: @{candidate.author}
@@ -184,6 +189,6 @@ def build_quote_post(model: str, candidate: QuoteCandidate, tone: str, audience:
             {"role": "user", "content": prompt},
         ],
     )
-    text = res.output_text.strip()
+    text = normalize_x_post_text(res.output_text.strip(), slot_name="noon")
     text = URL_RE.sub("", text).strip()
     return text

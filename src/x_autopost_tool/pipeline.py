@@ -88,6 +88,26 @@ def _pick_noon_latest_candidate(candidates, config: AppConfig):
     return ranked[0] if ranked else None
 
 
+def _rank_noon_latest_candidates(candidates, config: AppConfig):
+    ranked = sorted(
+        candidates,
+        key=lambda c: (
+            1 if c.has_video else 0,
+            1 if c.has_image else 0,
+            _engagement_score(c),
+            score_quote_candidate(c, config),
+        ),
+        reverse=True,
+    )
+    if config.quote_prefer_video:
+        videos = [c for c in ranked if c.has_video]
+        images = [c for c in ranked if c.has_image]
+        others = [c for c in ranked if c not in videos and c not in images]
+        if videos:
+            return videos + (images if config.quote_fallback_to_image else []) + others
+    return ranked
+
+
 def _is_transient_media_error(err: str) -> bool:
     e = (err or "").lower()
     return any(k in e for k in ["503", "unavailable", "high demand", "try again later"])
@@ -166,8 +186,8 @@ def run_once(config: AppConfig, slot: str | None = None) -> None:
         noon_candidates = filter_quote_candidates(noon_candidates, config)
         noon_candidates = [c for c in noon_candidates if score_quote_candidate(c, config) >= config.quote_min_score]
         if noon_candidates:
-            best_noon = _pick_noon_latest_candidate(noon_candidates, config)
-            if best_noon:
+            ranked_noon = _rank_noon_latest_candidates(noon_candidates, config)
+            for best_noon in ranked_noon[:5]:
                 print(
                     "[3/5] 昼枠引用生成 "
                     f"target={best_noon.tweet_id} "
@@ -188,7 +208,8 @@ def run_once(config: AppConfig, slot: str | None = None) -> None:
                         quote_tweet_id=best_noon.tweet_id,
                     )
                     if not quote_id:
-                        print("[NOON FALLBACK] 引用投稿に失敗したため通常投稿へ")
+                        print(f"[NOON RETRY] 引用投稿不可 target={best_noon.tweet_id} 次候補へ")
+                        continue
                     elif config.media_noon_reply_source_link:
                         source_url = f"https://x.com/{best_noon.author}/status/{best_noon.tweet_id}"
                         reply_text = f"出典メモ: {source_url}"
@@ -293,19 +314,24 @@ def run_once(config: AppConfig, slot: str | None = None) -> None:
         return
 
     print(f"[5/5] 引用投稿生成 count={config.max_quote_posts_per_run}")
-    for c in candidates[: config.max_quote_posts_per_run]:
+    posted_quotes = 0
+    for c in candidates:
+        if posted_quotes >= config.max_quote_posts_per_run:
+            break
         quote_text = build_quote_post(config.model, c, tone=config.tone, audience=config.audience)
         if is_duplicate(quote_text, memory):
             print(f"[SKIP QUOTE] 重複投稿 target={c.tweet_id}")
             continue
         if config.dry_run:
             print(f"[DRY-RUN QUOTE] {quote_text}\n  quote_tweet_id={c.tweet_id}")
+            posted_quotes += 1
             continue
         quote_id = _safe_create_post(x, quote_text, label=f"quote-post-{c.tweet_id}", quote_tweet_id=c.tweet_id)
         if not quote_id:
             continue
         register_text(quote_text, memory)
         memory_changed = True
+        posted_quotes += 1
         print(f"quote posted: {quote_id}")
 
     if memory_changed:
