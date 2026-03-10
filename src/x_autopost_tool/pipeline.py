@@ -299,6 +299,13 @@ def run_once(config: AppConfig, slot: str | None = None) -> None:
         memory_changed = True
         print(f"posted: {tweet_id}")
 
+    # Noon latest-share mode should either quote a fresh AI post or fall back to
+    # a single normal post. Do not also run the generic quote pipeline.
+    if resolved_slot == "noon" and slot_latest_share_mode:
+        if memory_changed:
+            save_memory(memory)
+        return
+
     if not slot_enable_quote:
         return
 
