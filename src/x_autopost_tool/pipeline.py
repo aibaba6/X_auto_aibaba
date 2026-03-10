@@ -93,6 +93,36 @@ def _is_transient_media_error(err: str) -> bool:
     return any(k in e for k in ["503", "unavailable", "high demand", "try again later"])
 
 
+def _safe_search_multi(x: XClient, queries: list[str], per_query: int, label: str):
+    try:
+        return x.search_multi(queries, per_query=per_query)
+    except Exception as e:
+        print(f"[X SEARCH ERROR] {label}: {e}")
+        return []
+
+
+def _safe_create_post(
+    x: XClient,
+    text: str,
+    label: str,
+    quote_tweet_id: str | None = None,
+    media_paths: list[str] | None = None,
+) -> str | None:
+    try:
+        return x.create_post(text, quote_tweet_id=quote_tweet_id, media_paths=media_paths)
+    except Exception as e:
+        print(f"[X POST ERROR] {label}: {e}")
+        return None
+
+
+def _safe_create_reply(x: XClient, text: str, in_reply_to_tweet_id: str, label: str) -> str | None:
+    try:
+        return x.create_reply(text, in_reply_to_tweet_id=in_reply_to_tweet_id)
+    except Exception as e:
+        print(f"[X REPLY ERROR] {label}: {e}")
+        return None
+
+
 def run_once(config: AppConfig, slot: str | None = None) -> None:
     now = datetime.now()
     today_key = _weekday_key(now)
@@ -130,7 +160,9 @@ def run_once(config: AppConfig, slot: str | None = None) -> None:
 
     if resolved_slot == "noon" and slot_latest_share_mode:
         print("[2/5] 昼枠: 最新情報の引用候補検索")
-        noon_candidates = x.search_multi(config.x_noon_queries, per_query=config.quote_candidates_limit)
+        noon_candidates = _safe_search_multi(
+            x, config.x_noon_queries, per_query=config.quote_candidates_limit, label="noon-latest"
+        )
         noon_candidates = filter_quote_candidates(noon_candidates, config)
         noon_candidates = [c for c in noon_candidates if score_quote_candidate(c, config) >= config.quote_min_score]
         if noon_candidates:
@@ -149,15 +181,23 @@ def run_once(config: AppConfig, slot: str | None = None) -> None:
                     print(f"[DRY-RUN NOON QUOTE] {quote_text}\n  quote_tweet_id={best_noon.tweet_id}")
                     return
                 else:
-                    quote_id = x.create_post(quote_text, quote_tweet_id=best_noon.tweet_id)
-                    if config.media_noon_reply_source_link:
+                    quote_id = _safe_create_post(
+                        x,
+                        quote_text,
+                        label="noon-quote",
+                        quote_tweet_id=best_noon.tweet_id,
+                    )
+                    if not quote_id:
+                        print("[NOON FALLBACK] 引用投稿に失敗したため通常投稿へ")
+                    elif config.media_noon_reply_source_link:
                         source_url = f"https://x.com/{best_noon.author}/status/{best_noon.tweet_id}"
                         reply_text = f"出典メモ: {source_url}"
-                        x.create_reply(reply_text, in_reply_to_tweet_id=quote_id)
-                    register_text(quote_text, memory)
-                    save_memory(memory)
-                    print(f"noon quote posted: {quote_id}")
-                    return
+                        _safe_create_reply(x, reply_text, in_reply_to_tweet_id=quote_id, label="noon-source-reply")
+                    if quote_id:
+                        register_text(quote_text, memory)
+                        save_memory(memory)
+                        print(f"noon quote posted: {quote_id}")
+                        return
         print("[NOON FALLBACK] 候補不足のため通常投稿へ")
 
     print("[2/5] 投稿案生成")
@@ -231,7 +271,9 @@ def run_once(config: AppConfig, slot: str | None = None) -> None:
             media_info = f"\n  media: {media_paths}" if media_paths else ""
             print(f"[DRY-RUN POST {i}] {d.text}\n  reason: {d.reason}{media_info}")
             continue
-        tweet_id = x.create_post(d.text, media_paths=media_paths)
+        tweet_id = _safe_create_post(x, d.text, label=f"main-post-{resolved_slot}-{i}", media_paths=media_paths)
+        if not tweet_id:
+            continue
         register_text(d.text, memory)
         memory_changed = True
         print(f"posted: {tweet_id}")
@@ -240,7 +282,9 @@ def run_once(config: AppConfig, slot: str | None = None) -> None:
         return
 
     print("[4/5] 引用候補検索")
-    candidates = x.search_multi(config.x_search_queries, per_query=config.quote_candidates_limit)
+    candidates = _safe_search_multi(
+        x, config.x_search_queries, per_query=config.quote_candidates_limit, label="quote-candidates"
+    )
     candidates = filter_quote_candidates(candidates, config)
     candidates = rank_quote_candidates(candidates, limit=config.quote_candidates_limit)
     candidates = [c for c in candidates if score_quote_candidate(c, config) >= config.quote_min_score]
@@ -257,7 +301,9 @@ def run_once(config: AppConfig, slot: str | None = None) -> None:
         if config.dry_run:
             print(f"[DRY-RUN QUOTE] {quote_text}\n  quote_tweet_id={c.tweet_id}")
             continue
-        quote_id = x.create_post(quote_text, quote_tweet_id=c.tweet_id)
+        quote_id = _safe_create_post(x, quote_text, label=f"quote-post-{c.tweet_id}", quote_tweet_id=c.tweet_id)
+        if not quote_id:
+            continue
         register_text(quote_text, memory)
         memory_changed = True
         print(f"quote posted: {quote_id}")

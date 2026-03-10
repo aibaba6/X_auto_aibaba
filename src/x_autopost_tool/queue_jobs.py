@@ -93,7 +93,11 @@ def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False
         if refreshed_at and (now - refreshed_at) < timedelta(minutes=10):
             continue
 
-        candidates = x.search_multi(config.x_noon_queries, per_query=config.quote_candidates_limit)
+        try:
+            candidates = x.search_multi(config.x_noon_queries, per_query=config.quote_candidates_limit)
+        except Exception as e:
+            print(f"[noon-refresh] x search error: {e}")
+            continue
         candidates = filter_quote_candidates(candidates, config)
         candidates = [c for c in candidates if score_quote_candidate(c, config) >= config.quote_min_score]
         if not candidates:
