@@ -8,14 +8,34 @@ import tweepy
 from .models import QuoteCandidate
 
 
+def _mask_secret(value: str | None) -> str:
+    if not value:
+        return "missing"
+    trimmed = value.strip()
+    if not trimmed:
+        return "blank"
+    if len(trimmed) <= 8:
+        return f"len={len(trimmed)}:{'*' * len(trimmed)}"
+    return f"len={len(trimmed)}:{trimmed[:4]}...{trimmed[-4:]}"
+
+
 class XClient:
     def __init__(self) -> None:
         self.consumer_key = os.getenv("X_API_KEY")
         self.consumer_secret = os.getenv("X_API_SECRET")
         self.access_token = os.getenv("X_ACCESS_TOKEN")
         self.access_secret = os.getenv("X_ACCESS_SECRET")
+        self.bearer_token = os.getenv("X_BEARER_TOKEN")
+        print(
+            "[X AUTH DEBUG] "
+            f"bearer={_mask_secret(self.bearer_token)} "
+            f"api_key={_mask_secret(self.consumer_key)} "
+            f"api_secret={_mask_secret(self.consumer_secret)} "
+            f"access_token={_mask_secret(self.access_token)} "
+            f"access_secret={_mask_secret(self.access_secret)}"
+        )
         self.client = tweepy.Client(
-            bearer_token=os.getenv("X_BEARER_TOKEN"),
+            bearer_token=self.bearer_token,
             consumer_key=self.consumer_key,
             consumer_secret=self.consumer_secret,
             access_token=self.access_token,
