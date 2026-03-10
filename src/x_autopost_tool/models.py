@@ -29,3 +29,4 @@ class QuoteCandidate:
     has_video: bool = False
     has_image: bool = False
     has_url: bool = False
+    is_reply: bool = False

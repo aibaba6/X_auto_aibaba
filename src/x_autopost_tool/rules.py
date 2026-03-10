@@ -99,6 +99,8 @@ def filter_quote_candidates(candidates: list[QuoteCandidate], config: AppConfig)
     out: list[QuoteCandidate] = []
     for c in candidates:
         text = c.text.strip()
+        if c.is_reply:
+            continue
         if config.quote_exclude_if_starts_with_mention and text.startswith("@"):
             continue
         if config.quote_exclude_if_contains_url and "http" in text:

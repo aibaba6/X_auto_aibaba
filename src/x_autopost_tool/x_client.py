@@ -54,7 +54,7 @@ class XClient:
         resp = self.client.search_recent_tweets(
             query=query,
             max_results=min(max(10, limit), 100),
-            tweet_fields=["author_id", "public_metrics", "entities", "attachments"],
+            tweet_fields=["author_id", "public_metrics", "entities", "attachments", "referenced_tweets"],
             expansions=["author_id", "attachments.media_keys"],
             user_fields=["username"],
             media_fields=["type"],
@@ -72,6 +72,8 @@ class XClient:
             media_keys = getattr(getattr(t, "attachments", None), "get", lambda *_: [])("media_keys", [])
             media_types = {media_by_key.get(k) for k in media_keys if media_by_key.get(k)}
             entities = t.entities or {}
+            referenced = getattr(t, "referenced_tweets", None) or []
+            is_reply = any(getattr(ref, "type", "") == "replied_to" for ref in referenced)
             has_url = bool(entities.get("urls")) or ("http" in (t.text or ""))
             out.append(
                 QuoteCandidate(
@@ -85,6 +87,7 @@ class XClient:
                     has_video=("video" in media_types or "animated_gif" in media_types),
                     has_image=("photo" in media_types),
                     has_url=has_url,
+                    is_reply=is_reply,
                 )
             )
         return out
