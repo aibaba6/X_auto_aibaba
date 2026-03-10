@@ -135,6 +135,26 @@ def _safe_create_post(
         return None
 
 
+def _try_create_post(
+    x: XClient,
+    text: str,
+    quote_tweet_id: str | None = None,
+    media_paths: list[str] | None = None,
+) -> tuple[str | None, str | None]:
+    try:
+        post_id = x.create_post(text, quote_tweet_id=quote_tweet_id, media_paths=media_paths)
+        return post_id, None
+    except Exception as e:
+        return None, str(e)
+
+
+def _is_quote_forbidden_error(err: str | None) -> bool:
+    if not err:
+        return False
+    lowered = err.lower()
+    return "403" in lowered and "quoting this post is not allowed" in lowered
+
+
 def _safe_create_reply(x: XClient, text: str, in_reply_to_tweet_id: str, label: str) -> str | None:
     try:
         return x.create_reply(text, in_reply_to_tweet_id=in_reply_to_tweet_id)
@@ -187,6 +207,7 @@ def run_once(config: AppConfig, slot: str | None = None) -> None:
         noon_candidates = [c for c in noon_candidates if score_quote_candidate(c, config) >= config.quote_min_score]
         if noon_candidates:
             ranked_noon = _rank_noon_latest_candidates(noon_candidates, config)
+            forbidden_hits = 0
             for best_noon in ranked_noon[:5]:
                 print(
                     "[3/5] 昼枠引用生成 "
@@ -201,14 +222,21 @@ def run_once(config: AppConfig, slot: str | None = None) -> None:
                     print(f"[DRY-RUN NOON QUOTE] {quote_text}\n  quote_tweet_id={best_noon.tweet_id}")
                     return
                 else:
-                    quote_id = _safe_create_post(
+                    quote_id, quote_err = _try_create_post(
                         x,
                         quote_text,
-                        label="noon-quote",
                         quote_tweet_id=best_noon.tweet_id,
                     )
                     if not quote_id:
-                        print(f"[NOON RETRY] 引用投稿不可 target={best_noon.tweet_id} 次候補へ")
+                        if _is_quote_forbidden_error(quote_err):
+                            forbidden_hits += 1
+                            print(f"[NOON SKIP] 引用不可 target={best_noon.tweet_id}")
+                            if forbidden_hits >= 2:
+                                print("[NOON FALLBACK] 引用不可候補が続いたため通常投稿へ")
+                                break
+                        else:
+                            print(f"[X POST ERROR] noon-quote: {quote_err}")
+                            print(f"[NOON RETRY] 引用投稿不可 target={best_noon.tweet_id} 次候補へ")
                         continue
                     elif config.media_noon_reply_source_link:
                         source_url = f"https://x.com/{best_noon.author}/status/{best_noon.tweet_id}"
