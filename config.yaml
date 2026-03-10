@@ -111,7 +111,7 @@ quote_rules:
 media:
   enabled: true
   morning_generate_image: true
-  morning_image_provider: freepik_mystic
+  morning_image_provider: nanobanana_cmd
   morning_image_output_dir: generated_media
   morning_retry_on_503: true
   morning_retry_delay_minutes: 10
