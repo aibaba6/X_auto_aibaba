@@ -30,3 +30,5 @@ class QuoteCandidate:
     has_image: bool = False
     has_url: bool = False
     is_reply: bool = False
+    conversation_id: str = ""
+    in_reply_to_user_id: str = ""

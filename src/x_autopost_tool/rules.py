@@ -101,6 +101,10 @@ def filter_quote_candidates(candidates: list[QuoteCandidate], config: AppConfig)
         text = c.text.strip()
         if c.is_reply:
             continue
+        if c.conversation_id and c.conversation_id != c.tweet_id:
+            continue
+        if c.in_reply_to_user_id:
+            continue
         if config.quote_exclude_if_starts_with_mention and text.startswith("@"):
             continue
         if config.quote_exclude_if_contains_url and "http" in text:

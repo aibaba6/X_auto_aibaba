@@ -54,7 +54,15 @@ class XClient:
         resp = self.client.search_recent_tweets(
             query=query,
             max_results=min(max(10, limit), 100),
-            tweet_fields=["author_id", "public_metrics", "entities", "attachments", "referenced_tweets"],
+            tweet_fields=[
+                "author_id",
+                "public_metrics",
+                "entities",
+                "attachments",
+                "referenced_tweets",
+                "conversation_id",
+                "in_reply_to_user_id",
+            ],
             expansions=["author_id", "attachments.media_keys"],
             user_fields=["username"],
             media_fields=["type"],
@@ -73,7 +81,13 @@ class XClient:
             media_types = {media_by_key.get(k) for k in media_keys if media_by_key.get(k)}
             entities = t.entities or {}
             referenced = getattr(t, "referenced_tweets", None) or []
+            conversation_id = str(getattr(t, "conversation_id", "") or "")
+            in_reply_to_user_id = str(getattr(t, "in_reply_to_user_id", "") or "")
             is_reply = any(getattr(ref, "type", "") == "replied_to" for ref in referenced)
+            if conversation_id and conversation_id != str(t.id):
+                is_reply = True
+            if in_reply_to_user_id:
+                is_reply = True
             has_url = bool(entities.get("urls")) or ("http" in (t.text or ""))
             out.append(
                 QuoteCandidate(
@@ -88,6 +102,8 @@ class XClient:
                     has_image=("photo" in media_types),
                     has_url=has_url,
                     is_reply=is_reply,
+                    conversation_id=conversation_id,
+                    in_reply_to_user_id=in_reply_to_user_id,
                 )
             )
         return out
