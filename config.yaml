@@ -12,8 +12,9 @@ sources:
   - AI design lang:ja -is:retweet
   - 生成AI デザイン lang:ja -is:retweet
   x_noon_queries:
-  - (AI OR 生成AI) lang:ja -is:retweet has:videos
-  - (AI OR 生成AI) lang:ja -is:retweet has:images
+  - (AI OR 生成AI OR OpenAI OR ChatGPT OR Claude OR Gemini OR Sora) lang:ja -is:retweet -is:reply has:videos
+  - (AI OR 生成AI OR OpenAI OR ChatGPT OR Claude OR Gemini OR Sora) lang:ja -is:retweet -is:reply has:images
+  - (AI OR 生成AI OR OpenAI OR ChatGPT OR Claude OR Gemini OR Sora) lang:ja -is:retweet -is:reply filter:media
 posting:
   max_posts_per_run: 1
   enable_quote_posts: true
