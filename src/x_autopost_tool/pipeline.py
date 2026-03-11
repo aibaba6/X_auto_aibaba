@@ -12,7 +12,7 @@ from .models import ContentItem, DraftPost
 from .pdf_knowledge import get_pdf_knowledge_snippets
 from .rules import filter_quote_candidates, score_quote_candidate, validate_post_draft
 from .settings import AppConfig
-from .uniqueness import is_duplicate, load_memory, register_text, save_memory
+from .uniqueness import fingerprint, is_duplicate, load_memory, register_text, save_memory
 from .x_client import XClient
 
 
@@ -38,6 +38,22 @@ def _resolve_slot(now: datetime, forced_slot: str | None) -> str:
     if hour < 15:
         return "noon"
     return "evening"
+
+
+def _fingerprints(texts: list[str]) -> set[str]:
+    out: set[str] = set()
+    for text in texts:
+        value = (text or "").strip()
+        if value:
+            out.add(fingerprint(value))
+    return out
+
+
+def _is_recent_duplicate(text: str, recent_fingerprints: set[str]) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return False
+    return fingerprint(value) in recent_fingerprints
 
 
 def _fallback_draft(item: ContentItem, slot: str, horizon: str) -> DraftPost:
@@ -293,6 +309,9 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     memory = load_memory(config.uniqueness_memory_path)
     memory_changed = False
     x = XClient()
+    recent_self_posts = x.recent_self_posts(limit=12)
+    recent_post_fingerprints = _fingerprints(recent_self_posts)
+    print(f"[RECENT POSTS] count={len(recent_self_posts)}")
 
     if _post_due_queue_item(x, config, resolved_slot, now, memory, queue_path):
         return
@@ -331,7 +350,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                     f"video={best_noon.has_video} image={best_noon.has_image}"
                 )
                 quote_text = build_quote_post(config.model, best_noon, tone=config.tone, audience=config.audience)
-                if is_duplicate(quote_text, memory):
+                if is_duplicate(quote_text, memory) or _is_recent_duplicate(quote_text, recent_post_fingerprints):
                     print("[NOON SKIP] 重複投稿のため通常投稿へフォールバック")
                 elif config.dry_run:
                     print(f"[DRY-RUN NOON QUOTE] {quote_text}\n  quote_tweet_id={best_noon.tweet_id}")
@@ -381,6 +400,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         slot_max_chars=slot_max_chars,
         max_posts=slot_posts_per_run,
         knowledge_snippets=pdf_knowledge,
+        recent_self_posts=recent_self_posts,
     )
     if not drafts and items:
         print("[FALLBACK] 生成失敗のためテンプレ投稿を作成")
@@ -390,21 +410,27 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     for d in drafts:
         ok, reasons = validate_post_draft(d, config, min_chars=slot_min_chars, max_chars=slot_max_chars)
         if ok:
-            if is_duplicate(d.text, memory):
+            if is_duplicate(d.text, memory) or _is_recent_duplicate(d.text, recent_post_fingerprints):
                 print("[DROP DRAFT] 重複投稿")
                 continue
             passed_drafts.append(d)
         else:
             print(f"[DROP DRAFT] {','.join(reasons)}")
     if not passed_drafts and drafts and config.force_post_if_no_passed:
-        non_duplicate_forced = [d for d in drafts if not is_duplicate(d.text, memory)]
+        non_duplicate_forced = [
+            d
+            for d in drafts
+            if not is_duplicate(d.text, memory) and not _is_recent_duplicate(d.text, recent_post_fingerprints)
+        ]
         if non_duplicate_forced:
             print("[FORCE POST] 品質ゲート通過案がないため、未使用の先頭案を採用")
             passed_drafts = [non_duplicate_forced[0]]
         else:
             for item in items:
                 alt = _fallback_draft(item, resolved_slot, config.prediction_horizon)
-                if not is_duplicate(alt.text, memory):
+                if not is_duplicate(alt.text, memory) and not _is_recent_duplicate(
+                    alt.text, recent_post_fingerprints
+                ):
                     print("[FORCE POST] 生成案が重複のため、RSSベースの代替案を採用")
                     passed_drafts = [alt]
                     break
@@ -481,7 +507,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         if posted_quotes >= config.max_quote_posts_per_run:
             break
         quote_text = build_quote_post(config.model, c, tone=config.tone, audience=config.audience)
-        if is_duplicate(quote_text, memory):
+        if is_duplicate(quote_text, memory) or _is_recent_duplicate(quote_text, recent_post_fingerprints):
             print(f"[SKIP QUOTE] 重複投稿 target={c.tweet_id}")
             continue
         if config.dry_run:

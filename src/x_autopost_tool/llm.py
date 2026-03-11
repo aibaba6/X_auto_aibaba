@@ -100,6 +100,7 @@ def build_post_drafts(
     slot_max_chars: int,
     max_posts: int,
     knowledge_snippets: list[str] | None = None,
+    recent_self_posts: list[str] | None = None,
 ) -> list[DraftPost]:
     payload = [
         {
@@ -111,6 +112,7 @@ def build_post_drafts(
     ]
 
     ksn = knowledge_snippets or []
+    recent_posts = recent_self_posts or []
 
     prompt = f"""
 対象読者: {audience}
@@ -120,6 +122,7 @@ def build_post_drafts(
 文体ガイド: {json.dumps(voice_guide, ensure_ascii=False)}
 文体参照（過去投稿サンプル）: {json.dumps(style_reference_posts[:6], ensure_ascii=False)}
 PDFストック知見（参考）: {json.dumps(ksn[:4], ensure_ascii=False)}
+直近の自分の投稿（重複回避用）: {json.dumps(recent_posts[:8], ensure_ascii=False)}
 曜日テーマ: {weekday_theme}
 投稿枠: {slot_name}
 投稿枠ルール: {slot_style}
@@ -133,6 +136,7 @@ PDFストック知見（参考）: {json.dumps(ksn[:4], ensure_ascii=False)}
 冷静さの中に、僅かなゆるさ・カジュアルさを入れること。
 語尾は「〜だ。」を避け、「です。」または体言止め（例: 〜が肝心。）をバランスよく使うこと。
 過去投稿サンプルのニュアンス・言葉遣い・改行リズムを優先して踏襲すること。
+ただし、直近の自分の投稿と同じ切り口・同じ主張・同じ言い回しは避けること。
 改行で読みやすくすること（2-4段落、1段落1-2文）。
 必要に応じて箇条書きは1-3項目まで（長い箇条書きは禁止）。
 中黒（・）や短い記号で読みやすくしてよい。

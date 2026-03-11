@@ -142,3 +142,22 @@ class XClient:
         for q in queries:
             out.extend(self.search_recent(q, limit=per_query))
         return out
+
+    def recent_self_posts(self, limit: int = 10) -> list[str]:
+        try:
+            me = self.client.get_me(user_auth=True, user_fields=["username"])
+            user_id = getattr(getattr(me, "data", None), "id", None)
+            if not user_id:
+                return []
+            resp = self.client.get_users_tweets(
+                id=user_id,
+                max_results=min(max(5, limit), 100),
+                exclude=["replies", "retweets"],
+                tweet_fields=["created_at"],
+                user_auth=True,
+            )
+            data = resp.data or []
+            return [t.text for t in data if getattr(t, "text", "").strip()]
+        except Exception as e:
+            print(f"[X RECENT POSTS ERROR] {e}")
+            return []
