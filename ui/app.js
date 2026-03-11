@@ -71,6 +71,8 @@ const queueTbody = document.getElementById("queueTbody");
 const queueMessage = document.getElementById("queueMessage");
 const railHint = document.getElementById("railHint");
 const generateImageBtn = document.getElementById("generateImageBtn");
+const deleteSelectedQueueBtn = document.getElementById("deleteSelectedQueueBtn");
+const clearQueueBtn = document.getElementById("clearQueueBtn");
 
 let currentPlan = [];
 let currentQueue = [];
@@ -662,13 +664,14 @@ function renderPlanRows(items) {
 
 function renderQueueRows(items) {
   if (!items.length) {
-    queueTbody.innerHTML = "<tr><td colspan='4'>保存された投稿キューはありません。</td></tr>";
+    queueTbody.innerHTML = "<tr><td colspan='7'>保存された投稿キューはありません。</td></tr>";
     return;
   }
   const html = items
     .map(
       (row, idx) => `
       <tr data-idx="${idx}" data-refresh-mode="${esc(row.refresh_mode || "")}" data-slot="${esc(row.slot || "")}">
+        <td><input type="checkbox" class="queue-select" /></td>
         <td><input type="datetime-local" class="queue-datetime" value="${esc(row.schedule_at)}" /></td>
         <td>${esc(slotLabel(row.slot))}</td>
         <td>${esc(row.theme || "")}</td>
@@ -676,6 +679,27 @@ function renderQueueRows(items) {
           <textarea class="queue-text" placeholder="${
             row.refresh_mode === "jit_noon" ? "投稿30分前に自動生成されます（手動入力も可）" : ""
           }">${esc(row.text || "")}</textarea>
+        </td>
+        <td>
+          <textarea class="queue-reply-text" placeholder="投稿後に付けるリプ（任意）">${esc(row.reply_text || "")}</textarea>
+        </td>
+        <td class="queue-media-cell" data-media-path="${esc(row.media_path || "")}">
+          <div class="queue-media-meta">
+            ${
+              row.media_url
+                ? `<a class="queue-media-link" href="${esc(row.media_url)}" target="_blank" rel="noreferrer">${esc(
+                    row.media_name || "添付画像",
+                  )}</a>`
+                : `<span class="queue-media-empty">未添付</span>`
+            }
+          </div>
+          <div class="queue-media-actions">
+            <input type="file" class="queue-media-file" accept=".png,.jpg,.jpeg,.webp,.gif" />
+            <button type="button" class="ghost mini queue-media-upload">画像を添付</button>
+            <button type="button" class="ghost mini queue-media-clear"${
+              row.media_path ? "" : " disabled"
+            }>解除</button>
+          </div>
         </td>
       </tr>
     `,
@@ -694,6 +718,10 @@ function applyPlanToQueue() {
     slot: p.slot,
     theme: p.theme,
     text: p.refresh_mode === "jit_noon" ? "" : p.text,
+    reply_text: "",
+    media_path: "",
+    media_name: "",
+    media_url: "",
     refresh_mode: p.refresh_mode || "",
   }));
   renderQueueRows(currentQueue);
@@ -706,15 +734,58 @@ function collectQueueFromTable() {
   rows.forEach((tr) => {
     const datetime = tr.querySelector(".queue-datetime")?.value || "";
     const text = (tr.querySelector(".queue-text")?.value || "").trim();
+    const replyText = (tr.querySelector(".queue-reply-text")?.value || "").trim();
     const refreshMode = tr.dataset.refreshMode || "";
     const cells = tr.querySelectorAll("td");
     const slot = (tr.dataset.slot || "").trim();
-    const theme = cells[2]?.textContent?.trim() || "";
+    const theme = cells[3]?.textContent?.trim() || "";
+    const mediaCell = tr.querySelector(".queue-media-cell");
+    const mediaPath = mediaCell?.dataset.mediaPath || "";
     if (datetime && slot) {
-      out.push({ schedule_at: datetime, slot, theme, text, refresh_mode: refreshMode });
+      out.push({
+        schedule_at: datetime,
+        slot,
+        theme,
+        text,
+        reply_text: replyText,
+        media_path: mediaPath,
+        refresh_mode: refreshMode,
+      });
     }
   });
   return out;
+}
+
+function syncQueueFromTable() {
+  const rows = [...queueTbody.querySelectorAll("tr[data-idx]")];
+  if (!rows.length) return currentQueue;
+  currentQueue = rows
+    .map((tr) => {
+      const idx = Number(tr.dataset.idx);
+      const prev = currentQueue[idx] || {};
+      const datetime = tr.querySelector(".queue-datetime")?.value || "";
+      const text = (tr.querySelector(".queue-text")?.value || "").trim();
+      const replyText = (tr.querySelector(".queue-reply-text")?.value || "").trim();
+      const refreshMode = tr.dataset.refreshMode || "";
+      const slot = (tr.dataset.slot || "").trim();
+      const cells = tr.querySelectorAll("td");
+      const theme = cells[3]?.textContent?.trim() || "";
+      const mediaCell = tr.querySelector(".queue-media-cell");
+      const mediaPath = mediaCell?.dataset.mediaPath || prev.media_path || "";
+      if (!datetime || !slot) return null;
+      return {
+        ...prev,
+        schedule_at: datetime,
+        slot,
+        theme,
+        text,
+        reply_text: replyText,
+        media_path: mediaPath,
+        refresh_mode: refreshMode,
+      };
+    })
+    .filter(Boolean);
+  return currentQueue;
 }
 
 async function buildPlan() {
@@ -743,11 +814,7 @@ async function buildPlan() {
 }
 
 async function saveQueue() {
-  const queue = collectQueueFromTable();
-  if (!queue.length) {
-    queueMessage.textContent = "保存するキューがありません。";
-    return;
-  }
+  const queue = syncQueueFromTable();
   queueMessage.textContent = "キュー保存中...";
   try {
     const data = await fetchJson("/api/queue", {
@@ -755,7 +822,8 @@ async function saveQueue() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ queue }),
     });
-    currentQueue = queue;
+    currentQueue = data.queue || queue;
+    renderQueueRows(currentQueue);
     queueMessage.textContent = data.message || "キューを保存しました。";
   } catch (e) {
     queueMessage.textContent = `キュー保存エラー: ${e}`;
@@ -780,6 +848,63 @@ async function loadQueue() {
   } catch (e) {
     queueMessage.textContent = `キュー読込エラー: ${e}`;
   }
+}
+
+function deleteSelectedQueueRows() {
+  syncQueueFromTable();
+  const rows = [...queueTbody.querySelectorAll("tr[data-idx]")];
+  const selectedIdx = rows
+    .filter((tr) => tr.querySelector(".queue-select")?.checked)
+    .map((tr) => Number(tr.dataset.idx));
+  if (!selectedIdx.length) {
+    queueMessage.textContent = "削除対象を選択してください。";
+    return;
+  }
+  currentQueue = currentQueue.filter((_, idx) => !selectedIdx.includes(idx));
+  renderQueueRows(currentQueue);
+  queueMessage.textContent = `${selectedIdx.length}件をキューから外しました。保存すると反映されます。`;
+}
+
+function clearQueueRows() {
+  currentQueue = [];
+  renderQueueRows(currentQueue);
+  queueMessage.textContent = "キューを空にしました。保存すると反映されます。";
+}
+
+async function uploadQueueMedia(idx, file) {
+  syncQueueFromTable();
+  if (!file) {
+    queueMessage.textContent = "添付する画像を選択してください。";
+    return;
+  }
+  queueMessage.textContent = "画像をアップロード中...";
+  const form = new FormData();
+  form.append("media", file);
+  try {
+    const data = await fetchFormJson("/api/queue_media_upload", form);
+    currentQueue[idx] = {
+      ...currentQueue[idx],
+      media_path: data.media_path || "",
+      media_url: data.media_url || "",
+      media_name: data.media_name || "",
+    };
+    renderQueueRows(currentQueue);
+    queueMessage.textContent = data.message || "画像を添付しました。保存すると反映されます。";
+  } catch (e) {
+    queueMessage.textContent = `画像添付エラー: ${e}`;
+  }
+}
+
+function clearQueueMedia(idx) {
+  syncQueueFromTable();
+  currentQueue[idx] = {
+    ...currentQueue[idx],
+    media_path: "",
+    media_url: "",
+    media_name: "",
+  };
+  renderQueueRows(currentQueue);
+  queueMessage.textContent = "添付画像を解除しました。保存すると反映されます。";
 }
 
 cards.forEach((card) => {
@@ -841,6 +966,8 @@ document.getElementById("verifyTargetBtn").addEventListener("click", verifyTarge
 document.getElementById("applyPlanToQueueBtn").addEventListener("click", applyPlanToQueue);
 document.getElementById("saveQueueBtn").addEventListener("click", saveQueue);
 document.getElementById("loadQueueBtn").addEventListener("click", loadQueue);
+deleteSelectedQueueBtn?.addEventListener("click", deleteSelectedQueueRows);
+clearQueueBtn?.addEventListener("click", clearQueueRows);
 
 document.querySelectorAll(".slot-run").forEach((btn) => {
   btn.addEventListener("click", () => runDry(btn.dataset.slot));
@@ -854,9 +981,27 @@ planUnit.addEventListener("change", updateCountSelector);
 queueTbody.addEventListener("input", (ev) => {
   const target = ev.target;
   if (!(target instanceof HTMLTextAreaElement)) return;
+  if (!target.classList.contains("queue-text") && !target.classList.contains("queue-reply-text")) return;
   if (!target.classList.contains("queue-text")) return;
   previewEditor.value = target.value;
   updateXPreview(previewEditor.value);
+});
+
+queueTbody.addEventListener("click", async (ev) => {
+  const target = ev.target;
+  if (!(target instanceof HTMLElement)) return;
+  const tr = target.closest("tr[data-idx]");
+  if (!tr) return;
+  const idx = Number(tr.dataset.idx);
+  if (target.classList.contains("queue-media-upload")) {
+    const fileInput = tr.querySelector(".queue-media-file");
+    const file = fileInput?.files?.[0];
+    await uploadQueueMedia(idx, file);
+    return;
+  }
+  if (target.classList.contains("queue-media-clear")) {
+    clearQueueMedia(idx);
+  }
 });
 
 if (pdfListBody) {

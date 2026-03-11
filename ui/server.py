@@ -34,6 +34,7 @@ ENV_KEYS = [
     "FREEPIK_API_KEY",
 ]
 ACCOUNT_REQUIRED_KEYS = ["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET"]
+QUEUE_MEDIA_DIR = DATA_ROOT / "queue_media"
 
 load_dotenv(ENV_PATH)
 if str(ROOT) not in sys.path:
@@ -175,10 +176,33 @@ def _pdf_knowledge_for_prompt(slot_name: str, max_docs: int = 3, max_chars_per_d
 
 def _safe_media_url(path: str) -> str:
     p = Path(path).resolve()
-    if ROOT.resolve() not in p.parents and p != ROOT.resolve():
+    if ROOT.resolve() in p.parents or p == ROOT.resolve():
+        rel = p.relative_to(ROOT.resolve())
+        return f"/api/media/{rel.as_posix()}"
+    if DATA_ROOT.resolve() in p.parents or p == DATA_ROOT.resolve():
+        rel = p.relative_to(DATA_ROOT.resolve())
+        return f"/api/data-media/{rel.as_posix()}"
+    raise ValueError("invalid media path")
+
+
+def _queue_media_meta(path: str) -> dict:
+    p = Path(path).resolve()
+    payload = {"media_path": str(p), "media_name": p.name}
+    try:
+        payload["media_url"] = _safe_media_url(str(p))
+    except Exception:
+        payload["media_url"] = ""
+    return payload
+
+
+def _validate_queue_media_path(raw_path: str) -> str:
+    value = str(raw_path or "").strip()
+    if not value:
+        return ""
+    p = Path(value).resolve()
+    if ROOT.resolve() not in p.parents and DATA_ROOT.resolve() not in p.parents:
         raise ValueError("invalid media path")
-    rel = p.relative_to(ROOT.resolve())
-    return f"/api/media/{rel.as_posix()}"
+    return str(p)
 
 
 def _semantic_domain_guard(topic: str, text: str) -> tuple[bool, str]:
@@ -754,6 +778,32 @@ def api_media_file(relpath: str):
     return send_from_directory(str(target.parent), target.name)
 
 
+@app.get("/api/data-media/<path:relpath>")
+def api_data_media_file(relpath: str):
+    target = (DATA_ROOT / relpath).resolve()
+    data_resolved = DATA_ROOT.resolve()
+    if data_resolved not in target.parents:
+        return jsonify({"ok": False, "message": "invalid path"}), 400
+    return send_from_directory(str(target.parent), target.name)
+
+
+@app.post("/api/queue_media_upload")
+def api_queue_media_upload():
+    file = request.files.get("media")
+    if not file or not file.filename:
+        return jsonify({"ok": False, "message": "画像ファイルを選択してください。"}), 400
+    safe_name = Path(file.filename).name
+    suffix = Path(safe_name).suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+        return jsonify({"ok": False, "message": "画像は png/jpg/jpeg/webp/gif のみ対応です。"}), 400
+    QUEUE_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    stem = Path(safe_name).stem or "queue_media"
+    saved = QUEUE_MEDIA_DIR / f"{stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}{suffix}"
+    file.save(saved)
+    meta = _queue_media_meta(str(saved))
+    return jsonify({"ok": True, "message": "添付画像を保存しました。", **meta})
+
+
 @app.post("/api/plan_preview")
 def api_plan_preview():
     if not request.is_json:
@@ -993,7 +1043,21 @@ def api_verify_target_account():
 
 @app.get("/api/queue")
 def api_get_queue():
-    return jsonify({"ok": True, "queue": _load_queue()})
+    queue = []
+    for item in _load_queue():
+        row = dict(item)
+        media_path = str(row.get("media_path", "")).strip()
+        if media_path:
+            try:
+                row.update(_queue_media_meta(media_path))
+            except Exception:
+                row["media_url"] = ""
+                row["media_name"] = Path(media_path).name
+        else:
+            row["media_url"] = ""
+            row["media_name"] = ""
+        queue.append(row)
+    return jsonify({"ok": True, "queue": queue})
 
 
 @app.post("/api/queue")
@@ -1024,6 +1088,8 @@ def api_save_queue():
                 "slot": slot,
                 "theme": theme,
                 "text": text,
+                "reply_text": str(item.get("reply_text", "")).strip(),
+                "media_path": _validate_queue_media_path(str(item.get("media_path", "")).strip()),
                 "source_tweet_id": str(item.get("source_tweet_id", "")).strip(),
                 "source_author": str(item.get("source_author", "")).strip(),
                 "last_refreshed_at": str(item.get("last_refreshed_at", "")).strip(),
@@ -1037,7 +1103,21 @@ def api_save_queue():
             continue
         register_text(str(item.get("text", "")), memory)
     save_memory(memory)
-    return jsonify({"ok": True, "message": f"{len(normalized)}件のキューを保存しました。"})
+    queue = []
+    for item in normalized:
+        row = dict(item)
+        media_path = str(row.get("media_path", "")).strip()
+        if media_path:
+            try:
+                row.update(_queue_media_meta(media_path))
+            except Exception:
+                row["media_url"] = ""
+                row["media_name"] = Path(media_path).name
+        else:
+            row["media_url"] = ""
+            row["media_name"] = ""
+        queue.append(row)
+    return jsonify({"ok": True, "message": f"{len(normalized)}件のキューを保存しました。", "queue": queue})
 
 
 @app.get("/")

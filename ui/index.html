@@ -410,10 +410,12 @@
             <div class="card-head">
               <div>
                 <h2>投稿キュー</h2>
-                <p>投稿日時と本文を確認・修正</p>
+                <p>投稿日時、本文、リプ、画像を確認・修正</p>
               </div>
               <div class="tweet-actions">
                 <button class="ghost" id="loadQueueBtn">保存キュー読込</button>
+                <button class="ghost" id="deleteSelectedQueueBtn">選択削除</button>
+                <button class="ghost danger" id="clearQueueBtn">全削除</button>
                 <button class="primary" id="saveQueueBtn">キューを保存</button>
               </div>
             </div>
@@ -422,10 +424,13 @@
               <table class="plan-table">
                 <thead>
                   <tr>
+                    <th>選択</th>
                     <th>日時</th>
                     <th>枠</th>
                     <th>テーマ</th>
                     <th>投稿文（編集可）</th>
+                    <th>投稿後リプ</th>
+                    <th>添付画像</th>
                   </tr>
                 </thead>
                 <tbody id="queueTbody"></tbody>

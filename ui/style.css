@@ -914,6 +914,49 @@ textarea:focus-visible {
   resize: vertical;
 }
 
+.queue-editor .danger {
+  color: #9d2c17;
+  border-color: #d8b0a6;
+}
+
+.queue-editor .mini {
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+.queue-media-cell {
+  min-width: 240px;
+}
+
+.queue-media-meta {
+  margin-bottom: 10px;
+  min-height: 20px;
+}
+
+.queue-media-link {
+  color: #0f5cc0;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.queue-media-link:hover {
+  text-decoration: underline;
+}
+
+.queue-media-empty {
+  color: #888;
+}
+
+.queue-media-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.queue-media-file {
+  width: 100%;
+}
+
 @media (max-width: 1024px) {
   .shell {
     margin: 14px;
