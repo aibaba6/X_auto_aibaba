@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 import time
+import yaml
 
 from .collectors import fetch_rss_items, filter_blocked, rank_quote_candidates
 from .llm import build_post_drafts, build_quote_post
@@ -163,7 +165,118 @@ def _safe_create_reply(x: XClient, text: str, in_reply_to_tweet_id: str, label: 
         return None
 
 
-def run_once(config: AppConfig, slot: str | None = None) -> None:
+def _load_queue_items(queue_path: str | None) -> list[dict]:
+    if not queue_path:
+        return []
+    path = Path(queue_path)
+    if not path.exists():
+        return []
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _save_queue_items(queue_path: str | None, items: list[dict]) -> None:
+    if not queue_path:
+        return
+    path = Path(queue_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(items, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def _find_due_queue_item(items: list[dict], slot: str, now: datetime) -> tuple[int, dict] | None:
+    matches: list[tuple[datetime, int, dict]] = []
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("slot", "")).strip() != slot:
+            continue
+        schedule_at = str(item.get("schedule_at", "")).strip()
+        if not schedule_at:
+            continue
+        try:
+            due_at = datetime.fromisoformat(schedule_at)
+        except Exception:
+            continue
+        if due_at <= now:
+            matches.append((due_at, idx, item))
+    if not matches:
+        return None
+    matches.sort(key=lambda x: x[0])
+    _due_at, idx, item = matches[0]
+    return idx, item
+
+
+def _resolve_media_path(raw_path: str) -> str | None:
+    value = (raw_path or "").strip()
+    if not value:
+        return None
+    path = Path(value).resolve()
+    if not path.exists():
+        print(f"[QUEUE SKIP] 添付画像が見つかりません: {value}")
+        return None
+    return str(path)
+
+
+def _post_due_queue_item(
+    x: XClient,
+    config: AppConfig,
+    resolved_slot: str,
+    now: datetime,
+    memory,
+    queue_path: str | None,
+) -> bool:
+    if not queue_path:
+        print("[QUEUE SKIP] queue_path未設定")
+        return False
+    queue_file = Path(queue_path)
+    if not queue_file.exists():
+        print(f"[QUEUE SKIP] queue file not found: {queue_file}")
+        return False
+    queue = _load_queue_items(queue_path)
+    found = _find_due_queue_item(queue, resolved_slot, now)
+    if not found:
+        print(f"[QUEUE SKIP] due item not found slot={resolved_slot} items={len(queue)}")
+        return False
+
+    idx, item = found
+    text = str(item.get("text", "")).strip()
+    if not text:
+        return False
+
+    media_path = _resolve_media_path(str(item.get("media_path", "")))
+    media_paths = [media_path] if media_path else None
+    reply_text = str(item.get("reply_text", "")).strip()
+    print(
+        "[QUEUE POST] "
+        f"slot={resolved_slot} "
+        f"schedule_at={item.get('schedule_at', '')} "
+        f"media={'yes' if media_paths else 'no'} "
+        f"reply={'yes' if reply_text else 'no'}"
+    )
+
+    if config.dry_run:
+        reply_info = f"\n  reply: {reply_text}" if reply_text else ""
+        media_info = f"\n  media: {media_paths}" if media_paths else ""
+        print(f"[DRY-RUN QUEUE POST] {text}{media_info}{reply_info}")
+        return True
+
+    tweet_id = _safe_create_post(x, text, label=f"queue-post-{resolved_slot}", media_paths=media_paths)
+    if not tweet_id:
+        return False
+    if reply_text:
+        _safe_create_reply(x, reply_text, in_reply_to_tweet_id=tweet_id, label=f"queue-reply-{resolved_slot}")
+    register_text(text, memory)
+    save_memory(memory)
+    del queue[idx]
+    _save_queue_items(queue_path, queue)
+    print(f"queue posted: {tweet_id}")
+    return True
+
+
+def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None = None) -> None:
     now = datetime.now()
     today_key = _weekday_key(now)
     weekday_theme = config.weekly_themes.get(today_key, "速報と実務示唆を重視した通常投稿")
@@ -179,6 +292,10 @@ def run_once(config: AppConfig, slot: str | None = None) -> None:
     print(f"[slot] {resolved_slot}: {slot_style}")
     memory = load_memory(config.uniqueness_memory_path)
     memory_changed = False
+    x = XClient()
+
+    if _post_due_queue_item(x, config, resolved_slot, now, memory, queue_path):
+        return
 
     print("[1/5] RSS収集")
     items = fetch_rss_items(config.rss_feeds, max_items=config.max_input_items)
@@ -195,8 +312,6 @@ def run_once(config: AppConfig, slot: str | None = None) -> None:
     if not items:
         print("情報ソースが空のため終了")
         return
-
-    x = XClient()
 
     if resolved_slot == "noon" and slot_latest_share_mode:
         print("[2/5] 昼枠: 最新情報の引用候補検索")
@@ -282,8 +397,20 @@ def run_once(config: AppConfig, slot: str | None = None) -> None:
         else:
             print(f"[DROP DRAFT] {','.join(reasons)}")
     if not passed_drafts and drafts and config.force_post_if_no_passed:
-        print("[FORCE POST] 品質ゲート通過案がないため、先頭案を採用")
-        passed_drafts = [drafts[0]]
+        non_duplicate_forced = [d for d in drafts if not is_duplicate(d.text, memory)]
+        if non_duplicate_forced:
+            print("[FORCE POST] 品質ゲート通過案がないため、未使用の先頭案を採用")
+            passed_drafts = [non_duplicate_forced[0]]
+        else:
+            for item in items:
+                alt = _fallback_draft(item, resolved_slot, config.prediction_horizon)
+                if not is_duplicate(alt.text, memory):
+                    print("[FORCE POST] 生成案が重複のため、RSSベースの代替案を採用")
+                    passed_drafts = [alt]
+                    break
+    if not passed_drafts:
+        print("[SKIP POST] 投稿可能な新規案がありません")
+        return
 
     print("[3/5] 通常投稿")
     for i, d in enumerate(passed_drafts, start=1):
