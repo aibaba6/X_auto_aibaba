@@ -12,8 +12,10 @@ sources:
   - AI design lang:ja -is:retweet
   - 生成AI デザイン lang:ja -is:retweet
   x_noon_queries:
-  - (AI OR 生成AI OR OpenAI OR ChatGPT OR Claude OR Gemini OR Sora) lang:ja -is:retweet -is:reply has:videos
-  - (AI OR 生成AI OR OpenAI OR ChatGPT OR Claude OR Gemini OR Sora) lang:ja -is:retweet -is:reply has:images
+  - (from:OpenAI OR from:AnthropicAI OR from:GoogleDeepMind OR from:GoogleAI OR from:perplexity_ai OR from:MistralAI OR from:runwayml OR from:StabilityAI) -is:retweet -is:reply has:videos
+  - (from:OpenAI OR from:AnthropicAI OR from:GoogleDeepMind OR from:GoogleAI OR from:perplexity_ai OR from:MistralAI OR from:runwayml OR from:StabilityAI) -is:retweet -is:reply has:images
+  - ((OpenAI OR ChatGPT OR Claude OR Gemini OR Sora OR Anthropic OR Perplexity OR Mistral) lang:ja -is:retweet -is:reply has:videos)
+  - ((OpenAI OR ChatGPT OR Claude OR Gemini OR Sora OR Anthropic OR Perplexity OR Mistral) lang:ja -is:retweet -is:reply has:images)
 posting:
   max_posts_per_run: 1
   enable_quote_posts: true
