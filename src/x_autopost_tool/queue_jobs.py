@@ -4,9 +4,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from .llm import build_quote_post
+from .queue_store import load_queue_items, save_queue_items
 from .rules import filter_quote_candidates, score_quote_candidate
 from .settings import AppConfig
 from .uniqueness import is_duplicate, load_memory, register_text, save_memory
@@ -45,21 +44,9 @@ def _pick_noon_latest_candidate(candidates, config: AppConfig):
                 return images[0]
     return ranked[0] if ranked else None
 
-
-def _load_queue(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or []
-    return data if isinstance(data, list) else []
-
-
-def _save_queue(path: Path, queue: list[dict[str, Any]]) -> None:
-    path.write_text(yaml.safe_dump(queue, allow_unicode=True, sort_keys=False), encoding="utf-8")
-
-
 def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False) -> int:
     path = Path(queue_path)
-    queue = _load_queue(path)
+    queue = load_queue_items(str(path))
     if not queue:
         print(f"[noon-refresh] queue not found or empty: {path}")
         return 0
@@ -126,7 +113,7 @@ def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False
         )
 
     if changed and not dry_run:
-        _save_queue(path, queue)
+        save_queue_items(str(path), queue)
         save_memory(memory)
     print(f"[noon-refresh] changed={changed} dry_run={dry_run}")
     return changed

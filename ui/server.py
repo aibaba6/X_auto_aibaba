@@ -30,8 +30,11 @@ ENV_KEYS = [
     "X_API_SECRET",
     "X_ACCESS_TOKEN",
     "X_ACCESS_SECRET",
+    "XAP_QUEUE_SYNC_URL",
+    "XAP_QUEUE_SYNC_TOKEN",
     "NANOBANANA_CMD_TEMPLATE",
     "FREEPIK_API_KEY",
+    "GOOGLE_API_KEY",
 ]
 ACCOUNT_REQUIRED_KEYS = ["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET"]
 QUEUE_MEDIA_DIR = DATA_ROOT / "queue_media"
@@ -243,6 +246,12 @@ def _load_queue() -> list[dict]:
 def _save_queue(items: list[dict]) -> None:
     QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
     QUEUE_PATH.write_text(yaml.safe_dump(items, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def _queue_sync_authorized() -> bool:
+    expected = os.getenv("XAP_QUEUE_SYNC_TOKEN", "").strip()
+    provided = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    return bool(expected) and provided == expected
 
 
 def _weekday_key(d: date) -> str:
@@ -1118,6 +1127,20 @@ def api_save_queue():
             row["media_name"] = ""
         queue.append(row)
     return jsonify({"ok": True, "message": f"{len(normalized)}件のキューを保存しました。", "queue": queue})
+
+
+@app.get("/api/internal/queue")
+def api_internal_get_queue():
+    if not _queue_sync_authorized():
+        return jsonify({"ok": False, "message": "unauthorized"}), 401
+    return api_get_queue()
+
+
+@app.post("/api/internal/queue")
+def api_internal_save_queue():
+    if not _queue_sync_authorized():
+        return jsonify({"ok": False, "message": "unauthorized"}), 401
+    return api_save_queue()
 
 
 @app.get("/")

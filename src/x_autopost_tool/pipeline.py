@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 import time
-import yaml
 
 from .collectors import fetch_rss_items, filter_blocked, rank_quote_candidates
 from .llm import build_post_drafts, build_quote_post
 from .media_tools import generate_image_with_freepik_mystic, generate_image_with_nanobanana
 from .models import ContentItem, DraftPost
 from .pdf_knowledge import get_pdf_knowledge_snippets
+from .queue_store import load_queue_items, queue_sync_enabled, save_queue_items
 from .rules import filter_quote_candidates, score_quote_candidate, validate_post_draft
 from .settings import AppConfig
 from .uniqueness import fingerprint, is_duplicate, load_memory, register_text, save_memory
@@ -181,27 +180,6 @@ def _safe_create_reply(x: XClient, text: str, in_reply_to_tweet_id: str, label: 
         return None
 
 
-def _load_queue_items(queue_path: str | None) -> list[dict]:
-    if not queue_path:
-        return []
-    path = Path(queue_path)
-    if not path.exists():
-        return []
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or []
-    except Exception:
-        return []
-    return data if isinstance(data, list) else []
-
-
-def _save_queue_items(queue_path: str | None, items: list[dict]) -> None:
-    if not queue_path:
-        return
-    path = Path(queue_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(items, allow_unicode=True, sort_keys=False), encoding="utf-8")
-
-
 def _find_due_queue_item(items: list[dict], slot: str, now: datetime) -> tuple[int, dict] | None:
     matches: list[tuple[datetime, int, dict]] = []
     for idx, item in enumerate(items):
@@ -244,14 +222,22 @@ def _post_due_queue_item(
     memory,
     queue_path: str | None,
 ) -> bool:
-    if not queue_path:
+    if not queue_path and not queue_sync_enabled():
         print("[QUEUE SKIP] queue_path未設定")
         return False
-    queue_file = Path(queue_path)
-    if not queue_file.exists():
-        print(f"[QUEUE SKIP] queue file not found: {queue_file}")
+    queue_label = queue_path or "remote-sync"
+    if not queue_sync_enabled():
+        from pathlib import Path
+
+        queue_file = Path(queue_path)
+        queue_label = str(queue_file)
+        if not queue_file.exists():
+            print(f"[QUEUE SKIP] queue file not found: {queue_file}")
+            return False
+    queue = load_queue_items(queue_path)
+    if not queue:
+        print(f"[QUEUE SKIP] queue file not found: {queue_label}")
         return False
-    queue = _load_queue_items(queue_path)
     found = _find_due_queue_item(queue, resolved_slot, now)
     if not found:
         print(f"[QUEUE SKIP] due item not found slot={resolved_slot} items={len(queue)}")
@@ -287,7 +273,7 @@ def _post_due_queue_item(
     register_text(text, memory)
     save_memory(memory)
     del queue[idx]
-    _save_queue_items(queue_path, queue)
+    save_queue_items(queue_path, queue)
     print(f"queue posted: {tweet_id}")
     return True
 
