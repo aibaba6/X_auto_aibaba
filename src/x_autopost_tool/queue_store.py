@@ -8,8 +8,26 @@ from urllib import error, request
 import yaml
 
 
+def _mask_env(value: str | None) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return "missing"
+    if len(raw) <= 10:
+        return f"len={len(raw)}:{raw[:2]}...{raw[-2:]}"
+    return f"len={len(raw)}:{raw[:6]}...{raw[-4:]}"
+
+
 def queue_sync_enabled() -> bool:
-    return bool(os.getenv("XAP_QUEUE_SYNC_URL")) and bool(os.getenv("XAP_QUEUE_SYNC_TOKEN"))
+    url = os.getenv("XAP_QUEUE_SYNC_URL", "").strip()
+    token = os.getenv("XAP_QUEUE_SYNC_TOKEN", "").strip()
+    enabled = bool(url) and bool(token)
+    print(
+        "[QUEUE SYNC DEBUG] "
+        f"enabled={'yes' if enabled else 'no'} "
+        f"url={_mask_env(url)} "
+        f"token={_mask_env(token)}"
+    )
+    return enabled
 
 
 def _local_load(queue_path: str | None) -> list[dict]:
