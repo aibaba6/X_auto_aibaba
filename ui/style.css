@@ -24,8 +24,9 @@ body {
 }
 
 .shell {
-  max-width: 1320px;
-  margin: 28px auto;
+  width: min(96vw, 1760px);
+  max-width: none;
+  margin: 20px auto;
   background: var(--panel);
   border-radius: 28px;
   padding: 26px;
@@ -910,8 +911,9 @@ textarea:focus-visible {
 }
 
 .queue-editor textarea {
-  min-height: 88px;
+  min-height: 132px;
   resize: vertical;
+  line-height: 1.6;
 }
 
 .queue-editor .danger {
@@ -925,8 +927,85 @@ textarea:focus-visible {
   font-size: 13px;
 }
 
+.queue-editor {
+  grid-column: 1 / -1;
+}
+
+.queue-editor .card-head {
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.queue-editor .tweet-actions {
+  margin-top: 0;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.queue-editor .plan-table-wrap {
+  margin-top: 18px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.queue-editor .plan-table {
+  width: 100%;
+  min-width: 1620px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.queue-editor .plan-table th,
+.queue-editor .plan-table td {
+  vertical-align: top;
+  text-align: left;
+  padding: 16px 12px;
+  border-bottom: 1px solid var(--line);
+  white-space: normal;
+  word-break: break-word;
+}
+
+.queue-editor .plan-table th:nth-child(1),
+.queue-editor .plan-table td:nth-child(1) {
+  width: 72px;
+}
+
+.queue-editor .plan-table th:nth-child(2),
+.queue-editor .plan-table td:nth-child(2) {
+  width: 220px;
+}
+
+.queue-editor .plan-table th:nth-child(3),
+.queue-editor .plan-table td:nth-child(3) {
+  width: 72px;
+}
+
+.queue-editor .plan-table th:nth-child(4),
+.queue-editor .plan-table td:nth-child(4) {
+  width: 240px;
+}
+
+.queue-editor .plan-table th:nth-child(5),
+.queue-editor .plan-table td:nth-child(5) {
+  width: 440px;
+}
+
+.queue-editor .plan-table th:nth-child(6),
+.queue-editor .plan-table td:nth-child(6) {
+  width: 320px;
+}
+
+.queue-editor .plan-table th:nth-child(7),
+.queue-editor .plan-table td:nth-child(7) {
+  width: 300px;
+}
+
+.queue-editor input[type="datetime-local"] {
+  min-width: 190px;
+}
+
 .queue-media-cell {
-  min-width: 240px;
+  min-width: 300px;
 }
 
 .queue-media-meta {
@@ -959,6 +1038,7 @@ textarea:focus-visible {
 
 @media (max-width: 1024px) {
   .shell {
+    width: auto;
     margin: 14px;
     padding: 16px;
   }
@@ -1008,5 +1088,9 @@ textarea:focus-visible {
 
   .hero-actions {
     width: 100%;
+  }
+
+  .queue-editor .plan-table {
+    min-width: 1280px;
   }
 }
