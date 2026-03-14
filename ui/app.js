@@ -303,12 +303,40 @@ function normalizePlanItem(item) {
   };
 }
 
+function normalizeQueueItem(item) {
+  const hasFinalMedia = !!(item.media_path || item.media_url);
+  const source = (item.media_source || (hasFinalMedia ? "existing" : "none")).trim() || "none";
+  return {
+    ...item,
+    media_source: source,
+    media_prompt: item.media_prompt || "",
+    media_visual_mode: item.media_visual_mode || getDefaultVisualMode(),
+    media_path: item.media_path || "",
+    media_url: item.media_url || "",
+    media_name: item.media_name || "",
+    media_candidate_path: item.media_candidate_path || "",
+    media_candidate_url: item.media_candidate_url || "",
+    media_candidate_name: item.media_candidate_name || "",
+    media_generating: !!item.media_generating,
+  };
+}
+
 function planMediaStatusLabel(row) {
   if (!canPlanGenerateImage(row.slot)) return "対象外";
   if (row.media_generating) return "生成中";
   if (row.media_approved && row.media_path) return "添付予定";
   if (row.media_path) return "生成済み";
   return "未生成";
+}
+
+function queueMediaStatusLabel(row) {
+  if (row.media_source === "generate" && row.media_path) return "生成画像を採用中";
+  if (row.media_source === "existing" && row.media_path) return "既存画像を添付中";
+  if (row.media_candidate_path) return "生成候補あり";
+  if (row.media_source === "generate" && row.media_generating) return "生成中";
+  if (row.media_source === "generate") return "生成待ち";
+  if (row.media_source === "existing") return row.media_path ? "画像選択済み" : "既存画像待ち";
+  return "画像なし";
 }
 
 function getModalImageSrc(img) {
@@ -843,20 +871,71 @@ function renderQueueRows(items) {
         </td>
         <td class="queue-media-cell" data-media-path="${esc(row.media_path || "")}">
           <div class="queue-media-meta">
-            ${
-              row.media_url
-                ? `<a class="queue-media-link" href="${esc(row.media_url)}" target="_blank" rel="noreferrer">${esc(
-                    row.media_name || "添付画像",
-                  )}</a>`
-                : `<span class="queue-media-empty">未添付</span>`
-            }
+            <strong class="queue-media-status">${esc(queueMediaStatusLabel(row))}</strong>
+            <select class="visual-mode-select queue-media-source">
+              <option value="none"${row.media_source === "none" ? " selected" : ""}>画像なし</option>
+              <option value="existing"${row.media_source === "existing" ? " selected" : ""}>既存画像を添付</option>
+              <option value="generate"${row.media_source === "generate" ? " selected" : ""}>Nano Banana Proで生成</option>
+            </select>
           </div>
-          <div class="queue-media-actions">
-            <input type="file" class="queue-media-file" accept=".png,.jpg,.jpeg,.webp,.gif" />
-            <button type="button" class="ghost mini queue-media-upload">画像を添付</button>
-            <button type="button" class="ghost mini queue-media-clear"${
-              row.media_path ? "" : " disabled"
-            }>解除</button>
+          ${
+            row.media_path || row.media_candidate_path
+              ? `
+            <div class="queue-media-preview-wrap">
+              <img
+                class="plan-media-preview queue-media-preview plan-media-zoomable"
+                src="${esc(row.media_candidate_url || row.media_url || "")}"
+                alt="queue media preview"
+              />
+              <div class="queue-media-caption">${
+                row.media_candidate_path
+                  ? `生成候補: ${esc(row.media_candidate_name || "generated.png")}`
+                  : `採用中: ${esc(row.media_name || "添付画像")}`
+              }</div>
+            </div>
+          `
+              : `<div class="queue-media-empty">まだ画像は選ばれていません。</div>`
+          }
+          <div class="queue-media-panel${row.media_source === "existing" ? " show" : ""}" data-panel="existing">
+            <div class="queue-media-actions">
+              ${
+                row.media_url
+                  ? `<a class="queue-media-link" href="${esc(row.media_url)}" target="_blank" rel="noreferrer">${esc(
+                      row.media_name || "添付画像",
+                    )}</a>`
+                  : `<span class="queue-media-empty">ローカル画像を選ぶか、保存済みの添付画像をそのまま使えます。</span>`
+              }
+              <input type="file" class="queue-media-file" accept=".png,.jpg,.jpeg,.webp,.gif" />
+              <button type="button" class="ghost mini queue-media-upload">画像を添付</button>
+              <button type="button" class="ghost mini queue-media-clear"${
+                row.media_path ? "" : " disabled"
+              }>解除</button>
+            </div>
+          </div>
+          <div class="queue-media-panel${row.media_source === "generate" ? " show" : ""}" data-panel="generate">
+            <div class="queue-media-actions">
+              <textarea class="queue-media-prompt" placeholder="空欄なら投稿文をもとに画像プロンプトを組み立てます。">${esc(
+                row.media_prompt || "",
+              )}</textarea>
+              <select class="visual-mode-select queue-media-visual-mode">
+                ${buildVisualModeOptions(row.media_visual_mode || "auto")}
+              </select>
+              <div class="op-progress queue-media-progress${row.media_generating ? " show" : ""}">
+                <div class="op-progress-bar">
+                  <i style="width:${row.media_generating ? "2%" : "0%"}"></i>
+                </div>
+                <p>${row.media_generating ? "生成中 0%" : "待機中"}</p>
+              </div>
+              <button type="button" class="ghost mini queue-media-generate">${
+                row.media_candidate_path ? "再生成" : "Nano Banana Proで生成"
+              }</button>
+              <button type="button" class="ghost mini queue-media-approve"${
+                row.media_candidate_path ? "" : " disabled"
+              }>採用</button>
+              <button type="button" class="ghost mini queue-media-cancel"${
+                row.media_candidate_path ? "" : " disabled"
+              }>キャンセル</button>
+            </div>
           </div>
         </td>
       </tr>
@@ -877,11 +956,14 @@ function applyPlanToQueue() {
     theme: p.theme,
     text: p.refresh_mode === "jit_noon" ? "" : p.text,
     reply_text: "",
+    media_source: p.media_approved ? "generate" : "none",
+    media_prompt: p.text || "",
+    media_visual_mode: p.media_visual_mode || getDefaultVisualMode(),
     media_path: p.media_approved ? p.media_path || "" : "",
     media_name: p.media_approved ? p.media_name || "" : "",
     media_url: p.media_approved ? p.media_url || "" : "",
     refresh_mode: p.refresh_mode || "",
-  }));
+  })).map(normalizeQueueItem);
   renderQueueRows(currentQueue);
   queueMessage.textContent = `${currentQueue.length}件を投稿キューに反映しました。`;
   showButtonSuccess(document.getElementById("applyPlanToQueueBtn"));
@@ -972,6 +1054,9 @@ function collectQueueFromTable() {
     const theme = cells[3]?.textContent?.trim() || "";
     const mediaCell = tr.querySelector(".queue-media-cell");
     const mediaPath = mediaCell?.dataset.mediaPath || "";
+    const mediaSource = tr.querySelector(".queue-media-source")?.value || "none";
+    const mediaPrompt = (tr.querySelector(".queue-media-prompt")?.value || "").trim();
+    const mediaVisualMode = tr.querySelector(".queue-media-visual-mode")?.value || getDefaultVisualMode();
     if (datetime && slot) {
       out.push({
         schedule_at: datetime,
@@ -979,6 +1064,9 @@ function collectQueueFromTable() {
         theme,
         text,
         reply_text: replyText,
+        media_source: mediaSource,
+        media_prompt: mediaPrompt,
+        media_visual_mode: mediaVisualMode,
         media_path: mediaPath,
         refresh_mode: refreshMode,
       });
@@ -1003,20 +1091,154 @@ function syncQueueFromTable() {
       const theme = cells[3]?.textContent?.trim() || "";
       const mediaCell = tr.querySelector(".queue-media-cell");
       const mediaPath = mediaCell?.dataset.mediaPath || prev.media_path || "";
+      const mediaSource = tr.querySelector(".queue-media-source")?.value || prev.media_source || "none";
+      const mediaPrompt = (tr.querySelector(".queue-media-prompt")?.value || prev.media_prompt || "").trim();
+      const mediaVisualMode =
+        tr.querySelector(".queue-media-visual-mode")?.value || prev.media_visual_mode || getDefaultVisualMode();
       if (!datetime || !slot) return null;
-      return {
+      return normalizeQueueItem({
         ...prev,
         schedule_at: datetime,
         slot,
         theme,
         text,
         reply_text: replyText,
+        media_source: mediaSource,
+        media_prompt: mediaPrompt,
+        media_visual_mode: mediaVisualMode,
         media_path: mediaPath,
         refresh_mode: refreshMode,
-      };
+      });
     })
     .filter(Boolean);
   return currentQueue;
+}
+
+function updateQueueMediaSource(idx, source) {
+  syncQueueFromTable();
+  const row = currentQueue[idx];
+  if (!row) return;
+  if (source === "none") {
+    currentQueue[idx] = normalizeQueueItem({
+      ...row,
+      media_source: "none",
+      media_path: "",
+      media_url: "",
+      media_name: "",
+      media_candidate_path: "",
+      media_candidate_url: "",
+      media_candidate_name: "",
+      media_generating: false,
+    });
+  } else if (source === "existing") {
+    currentQueue[idx] = normalizeQueueItem({
+      ...row,
+      media_source: "existing",
+      media_candidate_path: "",
+      media_candidate_url: "",
+      media_candidate_name: "",
+      media_generating: false,
+    });
+  } else {
+    currentQueue[idx] = normalizeQueueItem({
+      ...row,
+      media_source: "generate",
+      media_path: row.media_source === "generate" ? row.media_path : "",
+      media_url: row.media_source === "generate" ? row.media_url : "",
+      media_name: row.media_source === "generate" ? row.media_name : "",
+    });
+  }
+  renderQueueRows(currentQueue);
+}
+
+async function generateQueueMedia(idx) {
+  syncQueueFromTable();
+  const row = currentQueue[idx];
+  if (!row) return;
+  const sourceText = (row.media_prompt || row.text || "").trim();
+  if (!sourceText) {
+    queueMessage.textContent = "画像生成には投稿文または生成用プロンプトが必要です。";
+    return;
+  }
+  const tr = queueTbody.querySelector(`tr[data-idx="${idx}"]`);
+  const progressWrap = tr?.querySelector(".queue-media-progress");
+  const progressBar = progressWrap?.querySelector("i");
+  const progressText = progressWrap?.querySelector("p");
+  const generateBtn = tr?.querySelector(".queue-media-generate");
+  currentQueue[idx] = normalizeQueueItem({ ...row, media_source: "generate", media_generating: true });
+  renderQueueRows(currentQueue);
+  queueMessage.textContent = `${slotLabel(row.slot)}枠の画像を生成中...`;
+  const refreshedTr = queueTbody.querySelector(`tr[data-idx="${idx}"]`);
+  const nextProgressWrap = refreshedTr?.querySelector(".queue-media-progress");
+  const nextProgressBar = nextProgressWrap?.querySelector("i");
+  const nextProgressText = nextProgressWrap?.querySelector("p");
+  const progress =
+    nextProgressWrap && nextProgressBar && nextProgressText
+      ? startInlineProgress("queue_image", nextProgressWrap, nextProgressBar, nextProgressText, 18000)
+      : progressWrap && progressBar && progressText
+        ? startInlineProgress("queue_image", progressWrap, progressBar, progressText, 18000)
+        : null;
+  try {
+    const data = await fetchJson("/api/generate_image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: sourceText, visual_mode: row.media_visual_mode || getDefaultVisualMode() }),
+    });
+    currentQueue[idx] = normalizeQueueItem({
+      ...currentQueue[idx],
+      media_source: "generate",
+      media_generating: false,
+      media_candidate_path: data.path || "",
+      media_candidate_url: data.url || "",
+      media_candidate_name: (data.path || "").split("/").pop() || "generated.png",
+    });
+    progress?.done(true);
+    renderQueueRows(currentQueue);
+    queueMessage.textContent = "画像を生成しました。内容を確認して「採用」を押してください。";
+    showButtonSuccess(generateBtn);
+  } catch (e) {
+    currentQueue[idx] = normalizeQueueItem({ ...currentQueue[idx], media_generating: false });
+    progress?.done(false);
+    renderQueueRows(currentQueue);
+    queueMessage.textContent = `画像生成エラー: ${e}`;
+  }
+}
+
+function approveQueueGeneratedMedia(idx) {
+  syncQueueFromTable();
+  const row = currentQueue[idx];
+  if (!row || !row.media_candidate_path) return;
+  currentQueue[idx] = normalizeQueueItem({
+    ...row,
+    media_source: "generate",
+    media_path: row.media_candidate_path,
+    media_url: row.media_candidate_url,
+    media_name: row.media_candidate_name,
+    media_candidate_path: "",
+    media_candidate_url: "",
+    media_candidate_name: "",
+  });
+  renderQueueRows(currentQueue);
+  queueMessage.textContent = "生成画像を投稿キューの添付画像として採用しました。";
+  const btn = queueTbody.querySelector(`tr[data-idx="${idx}"] .queue-media-approve`);
+  showButtonSuccess(btn);
+}
+
+function cancelQueueGeneratedMedia(idx) {
+  syncQueueFromTable();
+  const row = currentQueue[idx];
+  if (!row) return;
+  currentQueue[idx] = normalizeQueueItem({
+    ...row,
+    media_candidate_path: "",
+    media_candidate_url: "",
+    media_candidate_name: "",
+    media_generating: false,
+  });
+  renderQueueRows(currentQueue);
+  queueMessage.textContent = "生成候補をキャンセルしました。";
+  const btn = queueTbody.querySelector(`tr[data-idx="${idx}"] .queue-media-cancel`);
+  showButtonSuccess(btn);
 }
 
 async function buildPlan() {
@@ -1057,7 +1279,7 @@ async function saveQueue() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ queue }),
     });
-    currentQueue = data.queue || queue;
+    currentQueue = (data.queue || queue).map(normalizeQueueItem);
     renderQueueRows(currentQueue);
     queueMessage.textContent = data.message || "キューを保存しました。";
     showButtonSuccess(document.getElementById("saveQueueBtn"));
@@ -1075,9 +1297,9 @@ async function loadQueue() {
         typeof q.text === "string" &&
         q.text.includes("昼枠は最新AI情報の引用シェア。動画付き投稿を優先し、無ければ画像付きから選びます。");
       if (q.slot === "noon" && legacyNoonRuleText && !q.refresh_mode) {
-        return { ...q, text: "", refresh_mode: "jit_noon" };
+        return normalizeQueueItem({ ...q, text: "", refresh_mode: "jit_noon" });
       }
-      return q;
+      return normalizeQueueItem(q);
     });
     renderQueueRows(currentQueue);
     queueMessage.textContent = `${currentQueue.length}件のキューを読み込みました。`;
@@ -1121,12 +1343,16 @@ async function uploadQueueMedia(idx, file) {
   form.append("media", file);
   try {
     const data = await fetchFormJson("/api/queue_media_upload", form);
-    currentQueue[idx] = {
+    currentQueue[idx] = normalizeQueueItem({
       ...currentQueue[idx],
+      media_source: "existing",
       media_path: data.media_path || "",
       media_url: data.media_url || "",
       media_name: data.media_name || "",
-    };
+      media_candidate_path: "",
+      media_candidate_url: "",
+      media_candidate_name: "",
+    });
     renderQueueRows(currentQueue);
     queueMessage.textContent = data.message || "画像を添付しました。保存すると反映されます。";
     const btn = queueTbody.querySelector(`tr[data-idx="${idx}"] .queue-media-upload`);
@@ -1138,12 +1364,17 @@ async function uploadQueueMedia(idx, file) {
 
 function clearQueueMedia(idx) {
   syncQueueFromTable();
-  currentQueue[idx] = {
+  currentQueue[idx] = normalizeQueueItem({
     ...currentQueue[idx],
+    media_source: "none",
+    media_prompt: currentQueue[idx]?.media_prompt || "",
     media_path: "",
     media_url: "",
     media_name: "",
-  };
+    media_candidate_path: "",
+    media_candidate_url: "",
+    media_candidate_name: "",
+  });
   renderQueueRows(currentQueue);
   queueMessage.textContent = "添付画像を解除しました。保存すると反映されます。";
   const btn = queueTbody.querySelector(`tr[data-idx="${idx}"] .queue-media-clear`);
@@ -1277,15 +1508,20 @@ planUnit.addEventListener("change", updateCountSelector);
 queueTbody.addEventListener("input", (ev) => {
   const target = ev.target;
   if (!(target instanceof HTMLTextAreaElement)) return;
-  if (!target.classList.contains("queue-text") && !target.classList.contains("queue-reply-text")) return;
-  if (!target.classList.contains("queue-text")) return;
-  previewEditor.value = target.value;
-  updateXPreview(previewEditor.value);
+  if (target.classList.contains("queue-text")) {
+    previewEditor.value = target.value;
+    updateXPreview(previewEditor.value);
+  }
 });
 
 queueTbody.addEventListener("click", async (ev) => {
   const target = ev.target;
   if (!(target instanceof HTMLElement)) return;
+  const zoomImage = target.closest(".queue-media-preview.plan-media-zoomable");
+  if (zoomImage instanceof HTMLImageElement) {
+    openImageModal(getModalImageSrc(zoomImage));
+    return;
+  }
   const tr = target.closest("tr[data-idx]");
   if (!tr) return;
   const idx = Number(tr.dataset.idx);
@@ -1297,6 +1533,35 @@ queueTbody.addEventListener("click", async (ev) => {
   }
   if (target.classList.contains("queue-media-clear")) {
     clearQueueMedia(idx);
+    return;
+  }
+  if (target.classList.contains("queue-media-generate")) {
+    await generateQueueMedia(idx);
+    return;
+  }
+  if (target.classList.contains("queue-media-approve")) {
+    approveQueueGeneratedMedia(idx);
+    return;
+  }
+  if (target.classList.contains("queue-media-cancel")) {
+    cancelQueueGeneratedMedia(idx);
+  }
+});
+
+queueTbody.addEventListener("change", (ev) => {
+  const target = ev.target;
+  if (!(target instanceof HTMLElement)) return;
+  const tr = target.closest("tr[data-idx]");
+  if (!tr) return;
+  const idx = Number(tr.dataset.idx);
+  if (target instanceof HTMLSelectElement && target.classList.contains("queue-media-source")) {
+    updateQueueMediaSource(idx, target.value || "none");
+    return;
+  }
+  if (target instanceof HTMLSelectElement && target.classList.contains("queue-media-visual-mode")) {
+    syncQueueFromTable();
+    currentQueue[idx] = normalizeQueueItem({ ...currentQueue[idx], media_visual_mode: target.value || "auto" });
+    return;
   }
 });
 
