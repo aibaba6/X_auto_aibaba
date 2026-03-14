@@ -20,6 +20,8 @@ VISUAL_MODES = {
     "photo": "Photo-based realistic scene with clean composition.",
 }
 
+NANOBANANA_PRO_DEFAULT_MODEL = "gemini-3-pro-image-preview"
+
 STOPWORDS = {
     "です",
     "ます",
@@ -68,6 +70,31 @@ def _extract_keywords(post_text: str, limit: int = 5) -> list[str]:
         if len(uniq) >= limit:
             break
     return uniq
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def resolve_nanobanana_pro_settings() -> dict[str, str | bool]:
+    api_key = (os.getenv("GOOGLE_API_KEY") or os.getenv("NANOBANANA_API_KEY") or "").strip()
+    model = (os.getenv("NANOBANANA_MODEL") or NANOBANANA_PRO_DEFAULT_MODEL).strip() or NANOBANANA_PRO_DEFAULT_MODEL
+    api_url = (
+        os.getenv("NANOBANANA_API_URL")
+        or f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    ).strip()
+    fallback_allowed = _env_flag("NANOBANANA_ALLOW_FALLBACK", default=False)
+    freepik_ready = bool((os.getenv("FREEPIK_API_KEY") or "").strip())
+    return {
+        "api_key": api_key,
+        "model": model,
+        "api_url": api_url,
+        "fallback_allowed": fallback_allowed,
+        "freepik_ready": freepik_ready,
+    }
 
 
 def _normalize_post_text(post_text: str) -> str:
@@ -423,32 +450,46 @@ def generate_image_with_nanobanana_pro_api(
     output_dir: str,
     visual_mode: str = "auto",
     timeout_sec: int = 120,
-) -> tuple[str | None, str, str]:
-    api_key = (os.getenv("GOOGLE_API_KEY") or os.getenv("NANOBANANA_API_KEY") or "").strip()
-    fallback_freepik = bool((os.getenv("FREEPIK_API_KEY") or "").strip())
+) -> tuple[str | None, str, str, dict[str, object]]:
+    settings = resolve_nanobanana_pro_settings()
+    api_key = str(settings["api_key"])
+    fallback_freepik = bool(settings["fallback_allowed"]) and bool(settings["freepik_ready"])
+    prompt_payload = build_nano_banana_prompt_payload(post_text, visual_mode=visual_mode)
+    used_mode = _select_visual_mode(post_text, visual_mode)
+    meta: dict[str, object] = {
+        "provider_requested": "nanobanana_pro",
+        "provider_used": "nanobanana_pro",
+        "model_requested": str(settings["model"]),
+        "model_used": str(settings["model"]),
+        "api_url": str(settings["api_url"]),
+        "fallback_allowed": bool(settings["fallback_allowed"]),
+        "fallback_used": False,
+        "prompt_payload": prompt_payload,
+    }
     if not api_key:
         if fallback_freepik:
-            return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
-        return None, "auto", "GOOGLE_API_KEY is not set"
+            out, mode, err = generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
+            meta.update({"provider_used": "freepik_mystic", "model_used": "freepik_mystic", "fallback_used": True})
+            return out, mode, err, meta
+        return None, used_mode, "GOOGLE_API_KEY is not set", meta
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    prompt, used_mode = build_morning_image_prompt(post_text, visual_mode=visual_mode)
+    prompt = str(prompt_payload["nano_banana_prompt_en"])
 
-    model = (os.getenv("NANOBANANA_MODEL") or "gemini-2.0-flash-preview-image-generation").strip()
-    base_url = (
-        os.getenv("NANOBANANA_API_URL")
-        or f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    ).strip()
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
     }
     req = Request(
-        f"{base_url}?key={api_key}",
+        str(settings["api_url"]),
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
         method="POST",
+    )
+    print(
+        f"[media] nanobanana_pro request model={settings['model']} "
+        f"fallback_allowed={'yes' if fallback_freepik else 'no'} visual_mode={used_mode}"
     )
 
     try:
@@ -458,18 +499,24 @@ def generate_image_with_nanobanana_pro_api(
         detail = e.read().decode("utf-8", errors="ignore")
         if fallback_freepik:
             print(f"[media] nanobanana_pro_api http {e.code}, falling back to Freepik")
-            return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
-        return None, used_mode, f"Nano Banana Pro HTTP {e.code}: {detail[:800]}"
+            out, mode, err = generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
+            meta.update({"provider_used": "freepik_mystic", "model_used": "freepik_mystic", "fallback_used": True})
+            return out, mode, err, meta
+        return None, used_mode, f"Nano Banana Pro HTTP {e.code}: {detail[:800]}", meta
     except URLError as e:
         if fallback_freepik:
             print("[media] nanobanana_pro_api url error, falling back to Freepik")
-            return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
-        return None, used_mode, f"Nano Banana Pro URL error: {e}"
+            out, mode, err = generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
+            meta.update({"provider_used": "freepik_mystic", "model_used": "freepik_mystic", "fallback_used": True})
+            return out, mode, err, meta
+        return None, used_mode, f"Nano Banana Pro URL error: {e}", meta
     except Exception as e:
         if fallback_freepik:
             print("[media] nanobanana_pro_api exception, falling back to Freepik")
-            return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
-        return None, used_mode, f"Nano Banana Pro exception: {e}"
+            out, mode, err = generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
+            meta.update({"provider_used": "freepik_mystic", "model_used": "freepik_mystic", "fallback_used": True})
+            return out, mode, err, meta
+        return None, used_mode, f"Nano Banana Pro exception: {e}", meta
 
     candidates = body.get("candidates") or []
     image_bytes: bytes | None = None
@@ -493,8 +540,10 @@ def generate_image_with_nanobanana_pro_api(
     if not image_bytes:
         if fallback_freepik:
             print("[media] nanobanana_pro_api no image data, falling back to Freepik")
-            return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
-        return None, used_mode, f"Nano Banana Pro response did not include image data: {body}"
+            out, mode, err = generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
+            meta.update({"provider_used": "freepik_mystic", "model_used": "freepik_mystic", "fallback_used": True})
+            return out, mode, err, meta
+        return None, used_mode, f"Nano Banana Pro response did not include image data: {body}", meta
 
     suffix = ".png"
     if "jpeg" in mime_type or "jpg" in mime_type:
@@ -503,7 +552,7 @@ def generate_image_with_nanobanana_pro_api(
         suffix = ".webp"
     out_path = out_dir / f"nanobanana_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}"
     out_path.write_bytes(image_bytes)
-    return str(out_path), used_mode, ""
+    return str(out_path), used_mode, "", meta
 
 
 def generate_image_with_freepik_mystic(

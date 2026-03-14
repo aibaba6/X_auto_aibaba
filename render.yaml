@@ -24,8 +24,14 @@ services:
         sync: false
       - key: X_ACCESS_SECRET
         sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
       - key: NANOBANANA_CMD_TEMPLATE
         sync: false
+      - key: NANOBANANA_MODEL
+        value: gemini-3-pro-image-preview
+      - key: NANOBANANA_ALLOW_FALLBACK
+        value: false
       - key: FREEPIK_API_KEY
         sync: false
     disk:

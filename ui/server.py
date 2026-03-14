@@ -51,6 +51,7 @@ from src.x_autopost_tool.media_tools import (
     generate_image_with_freepik_mystic,
     generate_image_with_nanobanana,
     generate_image_with_nanobanana_pro_api,
+    resolve_nanobanana_pro_settings,
 )
 from src.x_autopost_tool.pdf_knowledge import (
     delete_pdf_doc,
@@ -768,9 +769,27 @@ def api_generate_image():
         return jsonify({"ok": False, "message": "投稿文が空です。"}), 400
     conf = _load_media_config()
     provider = str(conf.get("morning_image_provider", "nanobanana_pro")).strip() or "nanobanana_pro"
+    prompt_payload = build_nano_banana_prompt_payload(text, visual_mode=visual_mode)
+    generation_meta = {
+        "provider_requested": provider,
+        "provider_used": provider,
+        "model_requested": "",
+        "model_used": "",
+        "fallback_allowed": False,
+        "fallback_used": False,
+        "prompt_payload": prompt_payload,
+    }
     if provider == "nanobanana_pro":
-        if not ((os.getenv("GOOGLE_API_KEY") or os.getenv("NANOBANANA_API_KEY") or "").strip()):
-            if not (os.getenv("FREEPIK_API_KEY") or "").strip():
+        nb_settings = resolve_nanobanana_pro_settings()
+        generation_meta.update(
+            {
+                "model_requested": str(nb_settings["model"]),
+                "model_used": str(nb_settings["model"]),
+                "fallback_allowed": bool(nb_settings["fallback_allowed"]),
+            }
+        )
+        if not str(nb_settings["api_key"]).strip():
+            if not (bool(nb_settings["fallback_allowed"]) and bool(nb_settings["freepik_ready"])):
                 return jsonify({"ok": False, "message": "GOOGLE_API_KEY が未設定です。"}), 400
     elif provider == "nanobanana_cmd":
         tpl = (os.getenv("NANOBANANA_CMD_TEMPLATE") or "").strip()
@@ -807,11 +826,24 @@ def api_generate_image():
         for i in range(retries):
             if provider == "freepik_mystic":
                 out, mode, err = generate_image_with_freepik_mystic(text, str(output_dir), visual_mode=visual_mode)
+                meta = {
+                    **generation_meta,
+                    "provider_used": "freepik_mystic",
+                    "model_used": "freepik_mystic",
+                }
             elif provider == "nanobanana_pro":
-                out, mode, err = generate_image_with_nanobanana_pro_api(text, str(output_dir), visual_mode=visual_mode)
+                out, mode, err, meta = generate_image_with_nanobanana_pro_api(
+                    text, str(output_dir), visual_mode=visual_mode
+                )
             else:
                 out, mode, err = generate_image_with_nanobanana(text, str(output_dir), visual_mode=visual_mode)
+                meta = {
+                    **generation_meta,
+                    "provider_used": "nanobanana_cmd",
+                    "model_used": "nanobanana_cmd",
+                }
             output, used_mode, err_detail = out, mode, err
+            generation_meta = meta
             if output:
                 break
             detail_lower = (err_detail or "").lower()
@@ -837,9 +869,23 @@ def api_generate_image():
                         + (f" 詳細: {detail}" if detail else "NANOBANANA_CMD_TEMPLATE と CLI 実行可否を確認してください。")
                     ),
                     "retry_after_sec": retry_after_sec,
+                    **generation_meta,
                 }
             ), status
-        return jsonify({"ok": True, "path": output, "url": _safe_media_url(output), "visual_mode": used_mode})
+        print(
+            f"[api_generate_image] requested={generation_meta['provider_requested']} "
+            f"used={generation_meta['provider_used']} model={generation_meta['model_used']} "
+            f"fallback={'yes' if generation_meta['fallback_used'] else 'no'}"
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "path": output,
+                "url": _safe_media_url(output),
+                "visual_mode": used_mode,
+                **generation_meta,
+            }
+        )
     except Exception as e:
         return jsonify({"ok": False, "message": f"画像生成エラー: {e}"}), 400
 

@@ -475,14 +475,23 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                     media_path, _mode, err = generate_image_with_freepik_mystic(
                         d.text, config.media_morning_image_output_dir
                     )
+                    print("[MEDIA GEN] provider=freepik_mystic model=freepik_mystic")
                 elif provider == "nanobanana_pro":
-                    media_path, _mode, err = generate_image_with_nanobanana_pro_api(
+                    media_path, _mode, err, meta = generate_image_with_nanobanana_pro_api(
                         d.text, config.media_morning_image_output_dir
+                    )
+                    print(
+                        "[MEDIA GEN] "
+                        f"requested={meta.get('provider_requested')} "
+                        f"used={meta.get('provider_used')} "
+                        f"model={meta.get('model_used')} "
+                        f"fallback={'yes' if meta.get('fallback_used') else 'no'}"
                     )
                 else:
                     media_path, _mode, err = generate_image_with_nanobanana(
                         d.text, config.media_morning_image_output_dir
                     )
+                    print("[MEDIA GEN] provider=nanobanana_cmd model=nanobanana_cmd")
                 if media_path:
                     media_paths = [media_path]
                     break
