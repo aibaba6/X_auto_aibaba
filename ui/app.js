@@ -293,6 +293,11 @@ function planMediaStatusLabel(row) {
   return "未生成";
 }
 
+function getModalImageSrc(img) {
+  if (!(img instanceof HTMLImageElement)) return "";
+  return img.currentSrc || img.getAttribute("src") || "";
+}
+
 function openImageModal(src) {
   if (!imageModal || !imageModalPreview || !src) return;
   imageModalPreview.src = src;
@@ -1187,8 +1192,9 @@ clearQueueBtn?.addEventListener("click", clearQueueRows);
 planTbody.addEventListener("click", async (ev) => {
   const target = ev.target;
   if (!(target instanceof HTMLElement)) return;
-  if (target.classList.contains("plan-media-zoomable")) {
-    openImageModal(target.getAttribute("src") || "");
+  const zoomImage = target.closest(".plan-media-zoomable");
+  if (zoomImage instanceof HTMLImageElement) {
+    openImageModal(getModalImageSrc(zoomImage));
     return;
   }
   const tr = target.closest("tr[data-plan-idx]");
@@ -1208,8 +1214,18 @@ planTbody.addEventListener("click", async (ev) => {
   }
 });
 
+generatedMediaPreview?.addEventListener("click", () => {
+  if (!generatedMediaPreview.classList.contains("show")) return;
+  openImageModal(getModalImageSrc(generatedMediaPreview));
+});
+
 imageModalCloseBtn?.addEventListener("click", closeImageModal);
 imageModal?.querySelector(".image-modal-backdrop")?.addEventListener("click", closeImageModal);
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && imageModal?.classList.contains("show")) {
+    closeImageModal();
+  }
+});
 
 document.querySelectorAll(".slot-run").forEach((btn) => {
   btn.addEventListener("click", () => runDry(btn.dataset.slot));
