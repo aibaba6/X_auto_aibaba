@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .collectors import fetch_rss_items, filter_blocked, rank_quote_candidates
 from .llm import build_noon_news_post, build_post_drafts, build_quote_post
-from .media_tools import generate_image_with_freepik_mystic, generate_image_with_nanobanana
+from .media_tools import generate_image_with_freepik_mystic, generate_image_with_nanobanana, generate_image_with_nanobanana_pro_api
 from .models import ContentItem, DraftPost
 from .pdf_knowledge import get_pdf_knowledge_snippets
 from .queue_store import load_queue_items, queue_sync_enabled, save_queue_items
@@ -475,6 +475,10 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                     media_path, _mode, err = generate_image_with_freepik_mystic(
                         d.text, config.media_morning_image_output_dir
                     )
+                elif provider == "nanobanana_pro":
+                    media_path, _mode, err = generate_image_with_nanobanana_pro_api(
+                        d.text, config.media_morning_image_output_dir
+                    )
                 else:
                     media_path, _mode, err = generate_image_with_nanobanana(
                         d.text, config.media_morning_image_output_dir
@@ -482,7 +486,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                 if media_path:
                     media_paths = [media_path]
                     break
-                if provider != "nanobanana_cmd":
+                if provider not in {"nanobanana_cmd", "nanobanana_pro"}:
                     break
                 if not config.media_morning_retry_on_503:
                     break

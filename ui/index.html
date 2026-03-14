@@ -246,6 +246,11 @@
                 <small id="mask_X_ACCESS_SECRET">未設定</small>
               </label>
               <label>
+                <span>GOOGLE_API_KEY</span>
+                <input id="GOOGLE_API_KEY" type="password" placeholder="AIza..." />
+                <small id="mask_GOOGLE_API_KEY">未設定</small>
+              </label>
+              <label>
                 <span>NANOBANANA_CMD_TEMPLATE</span>
                 <input id="NANOBANANA_CMD_TEMPLATE" type="password" placeholder='nanobanana --prompt "{prompt}" --out "{output}"' />
                 <small id="mask_NANOBANANA_CMD_TEMPLATE">未設定</small>
@@ -281,6 +286,7 @@
                 <label>
                   <span>朝画像プロバイダ</span>
                   <select id="media_morning_image_provider">
+                    <option value="nanobanana_pro">nanobanana_pro (API)</option>
                     <option value="nanobanana_cmd">nanobanana_cmd</option>
                     <option value="freepik_mystic">freepik_mystic</option>
                   </select>
@@ -389,6 +395,7 @@
                     <th>枠</th>
                     <th>テーマ</th>
                     <th>下書き</th>
+                    <th>画像</th>
                   </tr>
                 </thead>
                 <tbody id="planTbody"></tbody>

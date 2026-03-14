@@ -46,7 +46,11 @@ if str(ROOT) not in sys.path:
 
 from src.x_autopost_tool.collectors import fetch_rss_items, filter_blocked
 from src.x_autopost_tool.llm import build_post_drafts, normalize_x_post_text
-from src.x_autopost_tool.media_tools import generate_image_with_freepik_mystic, generate_image_with_nanobanana
+from src.x_autopost_tool.media_tools import (
+    generate_image_with_freepik_mystic,
+    generate_image_with_nanobanana,
+    generate_image_with_nanobanana_pro_api,
+)
 from src.x_autopost_tool.pdf_knowledge import (
     delete_pdf_doc,
     get_pdf_knowledge_snippets,
@@ -158,7 +162,7 @@ def _load_media_config() -> dict:
     return {
         "enabled": bool(media.get("enabled", False)),
         "morning_generate_image": bool(media.get("morning_generate_image", False)),
-        "morning_image_provider": str(media.get("morning_image_provider", "nanobanana_cmd")),
+        "morning_image_provider": str(media.get("morning_image_provider", "nanobanana_pro")),
         "morning_image_output_dir": str(media.get("morning_image_output_dir", "generated_media")),
         "noon_reply_source_link": bool(media.get("noon_reply_source_link", True)),
     }
@@ -594,8 +598,8 @@ def api_save_media_config():
         incoming.get("morning_generate_image", media.get("morning_generate_image", False))
     )
     media["morning_image_provider"] = str(
-        incoming.get("morning_image_provider", media.get("morning_image_provider", "nanobanana_cmd"))
-    ).strip() or "nanobanana_cmd"
+        incoming.get("morning_image_provider", media.get("morning_image_provider", "nanobanana_pro"))
+    ).strip() or "nanobanana_pro"
     media["morning_image_output_dir"] = str(
         incoming.get("morning_image_output_dir", media.get("morning_image_output_dir", "generated_media"))
     ).strip() or "generated_media"
@@ -762,8 +766,12 @@ def api_generate_image():
     if not text:
         return jsonify({"ok": False, "message": "投稿文が空です。"}), 400
     conf = _load_media_config()
-    provider = str(conf.get("morning_image_provider", "nanobanana_cmd")).strip() or "nanobanana_cmd"
-    if provider == "nanobanana_cmd":
+    provider = str(conf.get("morning_image_provider", "nanobanana_pro")).strip() or "nanobanana_pro"
+    if provider == "nanobanana_pro":
+        if not ((os.getenv("GOOGLE_API_KEY") or os.getenv("NANOBANANA_API_KEY") or "").strip()):
+            if not (os.getenv("FREEPIK_API_KEY") or "").strip():
+                return jsonify({"ok": False, "message": "GOOGLE_API_KEY が未設定です。"}), 400
+    elif provider == "nanobanana_cmd":
         tpl = (os.getenv("NANOBANANA_CMD_TEMPLATE") or "").strip()
         freepik_ready = bool((os.getenv("FREEPIK_API_KEY") or "").strip())
         if not tpl:
@@ -798,6 +806,8 @@ def api_generate_image():
         for i in range(retries):
             if provider == "freepik_mystic":
                 out, mode, err = generate_image_with_freepik_mystic(text, str(output_dir), visual_mode=visual_mode)
+            elif provider == "nanobanana_pro":
+                out, mode, err = generate_image_with_nanobanana_pro_api(text, str(output_dir), visual_mode=visual_mode)
             else:
                 out, mode, err = generate_image_with_nanobanana(text, str(output_dir), visual_mode=visual_mode)
             output, used_mode, err_detail = out, mode, err

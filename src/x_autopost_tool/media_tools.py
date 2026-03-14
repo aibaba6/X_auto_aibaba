@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -148,6 +149,94 @@ def generate_image_with_nanobanana(
             print("[media] exception, falling back to Freepik Mystic")
             return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
         return None, used_mode, str(e)
+
+
+def generate_image_with_nanobanana_pro_api(
+    post_text: str,
+    output_dir: str,
+    visual_mode: str = "auto",
+    timeout_sec: int = 120,
+) -> tuple[str | None, str, str]:
+    api_key = (os.getenv("GOOGLE_API_KEY") or os.getenv("NANOBANANA_API_KEY") or "").strip()
+    fallback_freepik = bool((os.getenv("FREEPIK_API_KEY") or "").strip())
+    if not api_key:
+        if fallback_freepik:
+            return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
+        return None, "auto", "GOOGLE_API_KEY is not set"
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    prompt, used_mode = build_morning_image_prompt(post_text, visual_mode=visual_mode)
+
+    model = (os.getenv("NANOBANANA_MODEL") or "gemini-2.0-flash-preview-image-generation").strip()
+    base_url = (
+        os.getenv("NANOBANANA_API_URL")
+        or f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    ).strip()
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+    }
+    req = Request(
+        f"{base_url}?key={api_key}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urlopen(req, timeout=max(30, timeout_sec)) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        detail = e.read().decode("utf-8", errors="ignore")
+        if fallback_freepik:
+            print(f"[media] nanobanana_pro_api http {e.code}, falling back to Freepik")
+            return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
+        return None, used_mode, f"Nano Banana Pro HTTP {e.code}: {detail[:800]}"
+    except URLError as e:
+        if fallback_freepik:
+            print("[media] nanobanana_pro_api url error, falling back to Freepik")
+            return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
+        return None, used_mode, f"Nano Banana Pro URL error: {e}"
+    except Exception as e:
+        if fallback_freepik:
+            print("[media] nanobanana_pro_api exception, falling back to Freepik")
+            return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
+        return None, used_mode, f"Nano Banana Pro exception: {e}"
+
+    candidates = body.get("candidates") or []
+    image_bytes: bytes | None = None
+    mime_type = "image/png"
+    for candidate in candidates:
+        content = (candidate or {}).get("content") or {}
+        for part in content.get("parts") or []:
+            inline = (part or {}).get("inlineData") or {}
+            data = str(inline.get("data") or "").strip()
+            if not data:
+                continue
+            mime_type = str(inline.get("mimeType") or mime_type).strip() or mime_type
+            try:
+                image_bytes = base64.b64decode(data)
+                break
+            except Exception:
+                continue
+        if image_bytes:
+            break
+
+    if not image_bytes:
+        if fallback_freepik:
+            print("[media] nanobanana_pro_api no image data, falling back to Freepik")
+            return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
+        return None, used_mode, f"Nano Banana Pro response did not include image data: {body}"
+
+    suffix = ".png"
+    if "jpeg" in mime_type or "jpg" in mime_type:
+        suffix = ".jpg"
+    elif "webp" in mime_type:
+        suffix = ".webp"
+    out_path = out_dir / f"nanobanana_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}"
+    out_path.write_bytes(image_bytes)
+    return str(out_path), used_mode, ""
 
 
 def generate_image_with_freepik_mystic(

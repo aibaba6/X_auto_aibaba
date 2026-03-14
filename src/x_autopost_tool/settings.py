@@ -188,7 +188,7 @@ class AppConfig:
 
     @property
     def media_morning_image_provider(self) -> str:
-        return str(self.raw.get("media", {}).get("morning_image_provider", "nanobanana_cmd"))
+        return str(self.raw.get("media", {}).get("morning_image_provider", "nanobanana_pro"))
 
     @property
     def media_morning_image_output_dir(self) -> str:

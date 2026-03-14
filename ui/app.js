@@ -21,6 +21,7 @@ const ENV_KEYS = [
   "X_API_SECRET",
   "X_ACCESS_TOKEN",
   "X_ACCESS_SECRET",
+  "GOOGLE_API_KEY",
   "NANOBANANA_CMD_TEMPLATE",
   "FREEPIK_API_KEY",
 ];
@@ -222,6 +223,27 @@ function esc(v) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function canPlanGenerateImage(slot) {
+  return slot === "morning" || slot === "evening";
+}
+
+function normalizePlanItem(item) {
+  return {
+    ...item,
+    media_path: item.media_path || "",
+    media_url: item.media_url || "",
+    media_name: item.media_name || "",
+    media_approved: !!item.media_approved,
+  };
+}
+
+function planMediaStatusLabel(row) {
+  if (!canPlanGenerateImage(row.slot)) return "対象外";
+  if (row.media_approved && row.media_path) return "添付予定";
+  if (row.media_path) return "生成済み";
+  return "未生成";
 }
 
 function setAccountStatusConnected({ username, name, followers: f, tweet_count: t }) {
@@ -502,7 +524,7 @@ async function loadMediaConfig() {
     const media = data.media || {};
     document.getElementById("media_enabled").checked = !!media.enabled;
     document.getElementById("media_morning_generate_image").checked = !!media.morning_generate_image;
-    document.getElementById("media_morning_image_provider").value = media.morning_image_provider || "nanobanana_cmd";
+    document.getElementById("media_morning_image_provider").value = media.morning_image_provider || "nanobanana_pro";
     document.getElementById("media_morning_image_output_dir").value = media.morning_image_output_dir || "generated_media";
     document.getElementById("media_noon_reply_source_link").checked = !!media.noon_reply_source_link;
     mediaMessage.textContent = "メディア設定を読み込みました。";
@@ -640,13 +662,13 @@ async function updatePdfSettings(docId, priority, scope) {
 
 function renderPlanRows(items) {
   if (!items.length) {
-    planTbody.innerHTML = "<tr><td colspan='5'>投稿予定はありません。</td></tr>";
+    planTbody.innerHTML = "<tr><td colspan='6'>投稿予定はありません。</td></tr>";
     return;
   }
   const html = items
     .map(
-      (row) => `
-      <tr>
+      (row, idx) => `
+      <tr data-plan-idx="${idx}">
         <td>${row.date}</td>
         <td>${row.time}</td>
         <td>${slotLabel(row.slot)}</td>
@@ -656,6 +678,31 @@ function renderPlanRows(items) {
             ? "投稿30分前に自動生成（AIニュース要約 + 予測 + 行動, リンクなし）"
             : row.text
         }</td>
+        <td class="plan-media-cell">
+          <div class="plan-media-status">${esc(planMediaStatusLabel(row))}</div>
+          ${
+            row.media_url
+              ? `<img class="plan-media-preview" src="${esc(row.media_url)}" alt="plan generated media" />`
+              : `<div class="plan-media-empty">${canPlanGenerateImage(row.slot) ? "画像なし" : "昼枠は画像なし"}</div>`
+          }
+          ${
+            canPlanGenerateImage(row.slot)
+              ? `
+            <div class="plan-media-actions">
+              <button type="button" class="ghost mini plan-generate-image">${
+                row.media_path ? "やり直し" : "Nano Banana Proで生成"
+              }</button>
+              <button type="button" class="ghost mini plan-approve-image"${
+                row.media_path ? "" : " disabled"
+              }>${row.media_approved ? "添付OK" : "OKで添付"}</button>
+              <button type="button" class="ghost mini plan-clear-image"${
+                row.media_path ? "" : " disabled"
+              }>解除</button>
+            </div>
+          `
+              : ""
+          }
+        </td>
       </tr>
     `,
     )
@@ -720,13 +767,59 @@ function applyPlanToQueue() {
     theme: p.theme,
     text: p.refresh_mode === "jit_noon" ? "" : p.text,
     reply_text: "",
-    media_path: "",
-    media_name: "",
-    media_url: "",
+    media_path: p.media_approved ? p.media_path || "" : "",
+    media_name: p.media_approved ? p.media_name || "" : "",
+    media_url: p.media_approved ? p.media_url || "" : "",
     refresh_mode: p.refresh_mode || "",
   }));
   renderQueueRows(currentQueue);
   queueMessage.textContent = `${currentQueue.length}件を投稿キューに反映しました。`;
+}
+
+async function generatePlanImage(idx) {
+  const row = currentPlan[idx];
+  if (!row || !canPlanGenerateImage(row.slot)) return;
+  planMessage.textContent = `${slotLabel(row.slot)}枠の画像を生成中...`;
+  try {
+    const data = await fetchJson("/api/generate_image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: row.text, visual_mode: "auto" }),
+    });
+    currentPlan[idx] = normalizePlanItem({
+      ...row,
+      media_path: data.path || "",
+      media_url: data.url || "",
+      media_name: (data.path || "").split("/").pop() || "generated.png",
+      media_approved: false,
+    });
+    renderPlanRows(currentPlan);
+    planMessage.textContent = `${slotLabel(row.slot)}枠の画像を生成しました。問題なければ「OKで添付」を押してください。`;
+  } catch (e) {
+    planMessage.textContent = `画像生成エラー: ${e}`;
+  }
+}
+
+function approvePlanImage(idx) {
+  const row = currentPlan[idx];
+  if (!row || !row.media_path) return;
+  currentPlan[idx] = normalizePlanItem({ ...row, media_approved: true });
+  renderPlanRows(currentPlan);
+  planMessage.textContent = `${slotLabel(row.slot)}枠の画像を添付予定にしました。`;
+}
+
+function clearPlanImage(idx) {
+  const row = currentPlan[idx];
+  if (!row) return;
+  currentPlan[idx] = normalizePlanItem({
+    ...row,
+    media_path: "",
+    media_url: "",
+    media_name: "",
+    media_approved: false,
+  });
+  renderPlanRows(currentPlan);
+  planMessage.textContent = `${slotLabel(row.slot)}枠の画像を解除しました。`;
 }
 
 function collectQueueFromTable() {
@@ -808,7 +901,7 @@ async function buildPlan() {
     });
     planGenerationNonce = Number(data.generation_nonce || planGenerationNonce);
     planMessage.textContent = `${data.count}件の投稿予定を作成しました。`;
-    currentPlan = data.plan || [];
+    currentPlan = (data.plan || []).map(normalizePlanItem);
     renderPlanRows(currentPlan);
     p.done(true);
   } catch (e) {
@@ -972,6 +1065,26 @@ document.getElementById("saveQueueBtn").addEventListener("click", saveQueue);
 document.getElementById("loadQueueBtn").addEventListener("click", loadQueue);
 deleteSelectedQueueBtn?.addEventListener("click", deleteSelectedQueueRows);
 clearQueueBtn?.addEventListener("click", clearQueueRows);
+
+planTbody.addEventListener("click", async (ev) => {
+  const target = ev.target;
+  if (!(target instanceof HTMLElement)) return;
+  const tr = target.closest("tr[data-plan-idx]");
+  if (!tr) return;
+  const idx = Number(tr.dataset.planIdx);
+  if (!Number.isFinite(idx)) return;
+  if (target.classList.contains("plan-generate-image")) {
+    await generatePlanImage(idx);
+    return;
+  }
+  if (target.classList.contains("plan-approve-image")) {
+    approvePlanImage(idx);
+    return;
+  }
+  if (target.classList.contains("plan-clear-image")) {
+    clearPlanImage(idx);
+  }
+});
 
 document.querySelectorAll(".slot-run").forEach((btn) => {
   btn.addEventListener("click", () => runDry(btn.dataset.slot));
