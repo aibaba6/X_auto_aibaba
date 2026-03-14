@@ -290,8 +290,8 @@ def _pick_auto_mode(post_text: str) -> str:
 def _build_avoid_list(post_text: str, visual_mode: str, concept_pattern: str) -> list[str]:
     avoid = [
         "generic futuristic AI imagery, robots, glowing brains, floating holograms",
-        "readable text, logos, watermarks, branded UI, tiny labels",
-        "overcrowded composition with too many elements or unclear focal point",
+        "readable text, full-sentence copy, poster headlines, logos, watermarks, branded UI, tiny labels",
+        "poster-like explanation, slide-deck layout, infographic overloaded with text, or too many elements without a focal point",
     ]
     text = _normalize_post_text(post_text)
     if concept_pattern == "comparison":
@@ -337,29 +337,32 @@ def build_nano_banana_prompt_payload(post_text: str, visual_mode: str = "auto") 
 
     base = (
         "Create a single image for an SNS post. "
+        "The image must support the meaning of the post without explaining the whole post like a poster. "
+        "Treat the post as information and the image as perception. "
         "The image must communicate the main idea immediately even without text. "
         "Prioritize clarity, relevance to the post, strong stopping power in a social feed, and clean composition. "
         "Choose one clear focal message only. "
-        "Keep the element count low and avoid abstract ambiguity."
+        "Keep the element count low and avoid abstract ambiguity. "
+        "If text appears in the image, keep it between zero and five words total; ideally use no text at all."
     )
     style = {
         "design_case": (
-            "Use a modern design-case direction with UI fragments, layout review artifacts, spacing studies, and restrained color accents."
+            "Use a modern design-case direction with UI fragments, layout review artifacts, spacing studies, restrained color accents, and clear gaze guidance."
         ),
         "diagram": (
-            "Use a minimal explanatory diagram style with clean hierarchy, before/after contrast or step relationships, and no tiny labels."
+            "Use a minimal structural diagram style with clean hierarchy, directional flow, before/after contrast or step relationships, and almost no text."
         ),
         "editorial": (
-            "Use a modern conceptual editorial style with strong focal composition, controlled symbolism, and meaningful negative space."
+            "Use a modern conceptual editorial style with strong focal composition, controlled symbolism, meaningful negative space, and one memorable visual hook."
         ),
         "photo": (
-            "Use a realistic photographic direction with believable objects, natural lighting, and a concrete scene tied to the post."
+            "Use a realistic photographic direction with believable objects, natural lighting, a concrete scene tied to the post, and one striking moment."
         ),
     }.get(mode, "Use a clean, modern, highly legible social-media visual style.")
     concept = {
-        "direct": "Visual approach: direct expression. Show the message as a concrete scene or workflow artifact.",
-        "comparison": "Visual approach: comparison expression. Make the difference or improvement instantly understandable in one glance.",
-        "symbolic": "Visual approach: symbolic expression. Use one grounded metaphor or everyday scene that still feels immediately readable.",
+        "direct": "Visual approach: direct expression. Show the message as one concrete scene, structural cue, or workflow artifact, not an explanatory poster.",
+        "comparison": "Visual approach: comparison expression. Use an NG versus OK contrast or before/after difference that is instantly understandable in one glance.",
+        "symbolic": "Visual approach: symbolic expression. Use one grounded metaphor or one memorable everyday scene that still feels immediately readable.",
     }[concept_pattern]
     subject = _build_subject_line(normalized)
     action = _build_action_line(normalized)
@@ -376,8 +379,11 @@ def build_nano_banana_prompt_payload(post_text: str, visual_mode: str = "auto") 
         f"感情トーンは{tone}。"
         f"中心メッセージは「{core_message}」。"
         f"ビジュアル方針は{visual_strategy}。"
-        "文字に頼らず、画像単体で意味が伝わる構図にしてください。"
+        "画像は投稿文を説明するポスターではなく、意味を補助する感覚的ビジュアルにしてください。"
+        "文字に頼らず、画像単体で意味が伝わる構図にしてください。画像内テキストは0〜5語以内、可能なら文字なし。"
         "要素は絞り、視認性を高く保ち、抽象的すぎる表現は避けてください。"
+        "役割は次のどれか1つに限定してください: コンセプトを象徴するビジュアル / NG例とOK例の対比 / 視線誘導や構造を示す図 / 印象的な1シーン。"
+        "説明は投稿文に任せ、画像では直感的理解、違和感、対比、視線誘導、余白のどれかを強めてください。"
         f"避ける表現: {'、'.join(avoid)}。"
     )
 
