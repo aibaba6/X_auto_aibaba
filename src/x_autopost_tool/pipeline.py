@@ -13,7 +13,7 @@ from .queue_store import load_queue_items, queue_sync_enabled, save_queue_items
 from .schedule_utils import now_local, parse_scheduled_datetime
 from .rules import filter_quote_candidates, score_quote_candidate, validate_post_draft
 from .settings import AppConfig
-from .uniqueness import fingerprint, is_duplicate, load_memory, register_text, save_memory
+from .uniqueness import append_history, fingerprint, history_fingerprints, is_duplicate, load_history, load_memory, register_text, save_history, save_memory
 from .x_client import XClient
 
 
@@ -55,6 +55,13 @@ def _is_recent_duplicate(text: str, recent_fingerprints: set[str]) -> bool:
     if not value:
         return False
     return fingerprint(value) in recent_fingerprints
+
+
+def _is_posted_before(text: str, posted_fingerprints: set[str]) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return False
+    return fingerprint(value) in posted_fingerprints
 
 
 def _fallback_draft(item: ContentItem, slot: str, horizon: str) -> DraftPost:
@@ -298,6 +305,16 @@ def _post_due_queue_item(
         _safe_create_reply(x, reply_text, in_reply_to_tweet_id=tweet_id, label=f"queue-reply-{resolved_slot}")
     register_text(text, memory)
     save_memory(memory)
+    history = load_history(config.post_history_path)
+    append_history(
+        text,
+        history,
+        slot=resolved_slot,
+        source="queue-post",
+        tweet_id=tweet_id,
+        posted_at=now.isoformat(),
+    )
+    save_history(history)
     del queue[idx]
     save_queue_items(queue_path, queue)
     print(f"queue posted: {tweet_id}")
@@ -319,7 +336,10 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     print(f"[theme] {today_key}: {weekday_theme}")
     print(f"[slot] {resolved_slot}: {slot_style}")
     memory = load_memory(config.uniqueness_memory_path)
+    history = load_history(config.post_history_path)
+    posted_slot_fingerprints = history_fingerprints(history, slot=resolved_slot)
     memory_changed = False
+    history_changed = False
     x = XClient()
     recent_self_posts = x.recent_self_posts(limit=12)
     recent_post_fingerprints = _fingerprints(recent_self_posts)
@@ -356,7 +376,9 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             recent_self_posts=recent_self_posts,
         )
         if noon_draft and not (
-            is_duplicate(noon_draft.text, memory) or _is_recent_duplicate(noon_draft.text, recent_post_fingerprints)
+            is_duplicate(noon_draft.text, memory)
+            or _is_recent_duplicate(noon_draft.text, recent_post_fingerprints)
+            or _is_posted_before(noon_draft.text, posted_slot_fingerprints)
         ):
             if config.dry_run:
                 print(f"[DRY-RUN NOON NEWS] {noon_draft.text}")
@@ -366,6 +388,16 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                 if tweet_id:
                     register_text(noon_draft.text, memory)
                     save_memory(memory)
+                    append_history(
+                        noon_draft.text,
+                        history,
+                        slot="noon",
+                        source="noon-news",
+                        tweet_id=tweet_id,
+                        posted_at=now.isoformat(),
+                    )
+                    posted_slot_fingerprints.add(fingerprint(noon_draft.text))
+                    save_history(history)
                     print(f"noon news posted: {tweet_id}")
                     return
         print("[NOON FALLBACK] 昼枠専用生成を通常投稿生成へフォールバック")
@@ -397,7 +429,11 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     for d in drafts:
         ok, reasons = validate_post_draft(d, config, min_chars=slot_min_chars, max_chars=slot_max_chars)
         if ok:
-            if is_duplicate(d.text, memory) or _is_recent_duplicate(d.text, recent_post_fingerprints):
+            if (
+                is_duplicate(d.text, memory)
+                or _is_recent_duplicate(d.text, recent_post_fingerprints)
+                or (resolved_slot in {"morning", "noon"} and _is_posted_before(d.text, posted_slot_fingerprints))
+            ):
                 print("[DROP DRAFT] 重複投稿")
                 continue
             passed_drafts.append(d)
@@ -407,7 +443,9 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         non_duplicate_forced = [
             d
             for d in drafts
-            if not is_duplicate(d.text, memory) and not _is_recent_duplicate(d.text, recent_post_fingerprints)
+            if not is_duplicate(d.text, memory)
+            and not _is_recent_duplicate(d.text, recent_post_fingerprints)
+            and not (resolved_slot in {"morning", "noon"} and _is_posted_before(d.text, posted_slot_fingerprints))
         ]
         if non_duplicate_forced:
             print("[FORCE POST] 品質ゲート通過案がないため、未使用の先頭案を採用")
@@ -417,7 +455,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                 alt = _fallback_draft(item, resolved_slot, config.prediction_horizon)
                 if not is_duplicate(alt.text, memory) and not _is_recent_duplicate(
                     alt.text, recent_post_fingerprints
-                ):
+                ) and not (resolved_slot in {"morning", "noon"} and _is_posted_before(alt.text, posted_slot_fingerprints)):
                     print("[FORCE POST] 生成案が重複のため、RSSベースの代替案を採用")
                     passed_drafts = [alt]
                     break
@@ -465,6 +503,16 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             continue
         register_text(d.text, memory)
         memory_changed = True
+        append_history(
+            d.text,
+            history,
+            slot=resolved_slot,
+            source="main-post",
+            tweet_id=tweet_id,
+            posted_at=now.isoformat(),
+        )
+        posted_slot_fingerprints.add(fingerprint(d.text))
+        history_changed = True
         print(f"posted: {tweet_id}")
 
     # Noon latest-share mode should either quote a fresh AI post or fall back to
@@ -472,6 +520,8 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     if resolved_slot == "noon" and slot_latest_share_mode:
         if memory_changed:
             save_memory(memory)
+        if history_changed:
+            save_history(history)
         return
 
     if not slot_enable_quote:
@@ -506,8 +556,19 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             continue
         register_text(quote_text, memory)
         memory_changed = True
+        append_history(
+            quote_text,
+            history,
+            slot=resolved_slot,
+            source="quote-post",
+            tweet_id=quote_id,
+            posted_at=now.isoformat(),
+        )
+        history_changed = True
         posted_quotes += 1
         print(f"quote posted: {quote_id}")
 
     if memory_changed:
         save_memory(memory)
+    if history_changed:
+        save_history(history)

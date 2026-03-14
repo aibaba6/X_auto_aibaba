@@ -74,6 +74,10 @@ class AppConfig:
         return str(self.raw.get("posting", {}).get("uniqueness_memory_path", "post_memory.yaml"))
 
     @property
+    def post_history_path(self) -> str:
+        return str(self.raw.get("posting", {}).get("post_history_path", "post_history.yaml"))
+
+    @property
     def model(self) -> str:
         return self.raw.get("generation", {}).get("model", "gpt-4.1-mini")
 

@@ -57,9 +57,13 @@ from src.x_autopost_tool.pdf_knowledge import (
 from src.x_autopost_tool.settings import load_config
 from src.x_autopost_tool.uniqueness import (
     MemoryStore,
+    append_history,
+    history_fingerprints,
     is_duplicate,
+    load_history,
     load_memory,
     register_text,
+    save_history,
     save_memory,
 )
 
@@ -321,6 +325,15 @@ def _rotation_start(seed: int, length: int) -> int:
     return seed % length
 
 
+def _is_used_before(text: str, memory: MemoryStore, seen_fingerprints: set[str]) -> bool:
+    from src.x_autopost_tool.uniqueness import fingerprint
+
+    value = (text or "").strip()
+    if not value:
+        return False
+    return is_duplicate(value, memory) or fingerprint(value) in seen_fingerprints
+
+
 MORNING_EVERGREEN_TOPICS = [
     {
         "title": "余白は“飾り”ではなく情報設計",
@@ -440,38 +453,37 @@ def _evening_aruaru_post(index: int, variant: int = 0) -> str:
     return variants[variant % len(variants)]
 
 
-EVENING_FALLBACK_VARIANTS = [
-    (
-        "今日は小さな改善を1つ残せたら十分です。\n"
-        "明日に渡すメモを1行だけ書いて終わりにします。\n\n"
-        "#デザイン #制作フロー #継続改善"
-    ),
-    (
-        "手が止まる日は、無理に進めないほうがうまくいくことがあります。\n"
-        "判断だけ先にメモして、作業は明日の自分に渡すのも手です。\n\n"
-        "#デザイン実務 #仕事術 #継続改善"
-    ),
-    (
-        "夕方の修正は、勢いより優先順位が効きます。\n"
-        "今日は『直す理由が言える1箇所』だけ整えて締めます。\n\n"
-        "#デザイン #制作現場 #仕事あるある"
-    ),
-    (
-        "うまく進まない日は、設計が悪いのではなく疲れているだけのこともあります。\n"
-        "まずは論点を2つに絞って、続きは明日に回す判断もありです。\n\n"
-        "#デザイン現場 #仕事術 #制作フロー"
-    ),
-    (
-        "完璧に終わらない日があっても大丈夫です。\n"
-        "今日は『次に迷わないメモ』を残せたら、それで十分。\n\n"
-        "#デザイン #継続改善 #仕事あるある"
-    ),
+EVENING_FALLBACK_OPENERS = [
+    "今日は小さな改善を1つ残せたら十分です。",
+    "手が止まる日は、無理に進めないほうがうまくいくことがあります。",
+    "夕方の修正は、勢いより優先順位が効きます。",
+    "うまく進まない日は、設計が悪いのではなく疲れているだけのこともあります。",
+    "完璧に終わらない日があっても大丈夫です。",
+]
+
+EVENING_FALLBACK_BODIES = [
+    "明日に渡すメモを1行だけ書いて終わりにします。",
+    "判断だけ先にメモして、作業は明日の自分に渡すのも手です。",
+    "今日は『直す理由が言える1箇所』だけ整えて締めます。",
+    "まずは論点を2つに絞って、続きは明日に回す判断もありです。",
+    "今日は『次に迷わないメモ』を残せたら、それで十分。",
+]
+
+EVENING_FALLBACK_TAGS = [
+    "#デザイン #制作フロー #継続改善",
+    "#デザイン実務 #仕事術 #継続改善",
+    "#デザイン #制作現場 #仕事あるある",
+    "#デザイン現場 #仕事術 #制作フロー",
+    "#デザイン #継続改善 #仕事あるある",
 ]
 
 
-def _evening_fallback_post(d: date) -> str:
-    idx = d.toordinal() % len(EVENING_FALLBACK_VARIANTS)
-    return EVENING_FALLBACK_VARIANTS[idx]
+def _evening_fallback_post(d: date, variant: int = 0) -> str:
+    base = d.toordinal() + variant * 7
+    opener = EVENING_FALLBACK_OPENERS[base % len(EVENING_FALLBACK_OPENERS)]
+    body = EVENING_FALLBACK_BODIES[(base // len(EVENING_FALLBACK_OPENERS)) % len(EVENING_FALLBACK_BODIES)]
+    tags = EVENING_FALLBACK_TAGS[(base // 3) % len(EVENING_FALLBACK_TAGS)]
+    return f"{opener}\n{body}\n\n{tags}"
 
 
 def _rotated_items(items: list, seed: int, take: int = 8) -> list:
@@ -490,9 +502,11 @@ def _unique_or_fallback(
     weekday_theme: str,
     memory: MemoryStore,
     local_fp: set[str],
+    history_fp: set[str] | None = None,
 ) -> str:
+    used_fp = history_fp or set()
     candidate = text.strip()
-    if candidate and not is_duplicate(candidate, memory):
+    if candidate and not _is_used_before(candidate, memory, used_fp):
         from src.x_autopost_tool.uniqueness import fingerprint
 
         fp = fingerprint(candidate)
@@ -512,10 +526,10 @@ def _unique_or_fallback(
         candidate = _jit_noon_placeholder(30)
     else:
         candidate = _evening_fallback_post(d)
-        if is_duplicate(candidate, memory):
-            for i in range(len(EVENING_FALLBACK_VARIANTS)):
-                alt = EVENING_FALLBACK_VARIANTS[(d.toordinal() + i + 1) % len(EVENING_FALLBACK_VARIANTS)]
-                if not is_duplicate(alt, memory):
+        if _is_used_before(candidate, memory, used_fp):
+            for i in range(len(EVENING_FALLBACK_OPENERS) * len(EVENING_FALLBACK_BODIES)):
+                alt = _evening_fallback_post(d, variant=i + 1)
+                if not _is_used_before(alt, memory, used_fp):
                     candidate = alt
                     break
     from src.x_autopost_tool.uniqueness import fingerprint
@@ -876,6 +890,10 @@ def api_plan_preview():
 
     config = load_config(str(CONFIG_PATH))
     memory = load_memory(config.uniqueness_memory_path)
+    history = load_history(config.post_history_path)
+    posted_morning_fp = history_fingerprints(history, slot="morning")
+    posted_noon_fp = history_fingerprints(history, slot="noon")
+    posted_evening_fp = history_fingerprints(history, slot="evening")
     total_days = _days_from_unit(unit, count)
     slots = config.required_daily_slots or ["morning", "noon", "evening"]
     items = fetch_rss_items(config.rss_feeds, max_items=config.max_input_items)
@@ -908,7 +926,7 @@ def api_plan_preview():
                 morning_order = _shuffled_indices(len(MORNING_EVERGREEN_TOPICS), morning_seed)
                 for order_idx in morning_order:
                     candidate = _morning_evergreen_post(order_idx, variant=morning_variant)
-                    if not is_duplicate(candidate, memory):
+                    if not _is_used_before(candidate, memory, posted_morning_fp):
                         from src.x_autopost_tool.uniqueness import fingerprint
 
                         fp = fingerprint(candidate)
@@ -917,7 +935,7 @@ def api_plan_preview():
                             picked = candidate
                             break
                 if not picked:
-                    picked = _unique_or_fallback("", "morning", d, weekday_theme, memory, local_fp)
+                    picked = _unique_or_fallback("", "morning", d, weekday_theme, memory, local_fp, posted_morning_fp)
                 text = picked
                 plan.append(
                     {
@@ -938,7 +956,7 @@ def api_plan_preview():
                 evening_order = _shuffled_indices(len(EVENING_ARUARU_TOPICS), evening_seed)
                 for order_idx in evening_order:
                     candidate = _evening_aruaru_post(order_idx, variant=evening_variant)
-                    if not is_duplicate(candidate, memory):
+                    if not _is_used_before(candidate, memory, posted_evening_fp):
                         from src.x_autopost_tool.uniqueness import fingerprint
 
                         fp = fingerprint(candidate)
@@ -947,7 +965,7 @@ def api_plan_preview():
                             picked = candidate
                             break
                 if not picked:
-                    picked = _unique_or_fallback("", "evening", d, weekday_theme, memory, local_fp)
+                    picked = _unique_or_fallback("", "evening", d, weekday_theme, memory, local_fp, posted_evening_fp)
                 text = picked
                 plan.append(
                     {
@@ -990,7 +1008,7 @@ def api_plan_preview():
                             rotation = _rotation_start(generation_nonce + i + attempt, len(drafts))
                             ordered_drafts = drafts[rotation:] + drafts[:rotation]
                             for dft in ordered_drafts:
-                                if not is_duplicate(dft.text, memory):
+                                if not _is_used_before(dft.text, memory, posted_noon_fp):
                                     from src.x_autopost_tool.uniqueness import fingerprint
 
                                     fp = fingerprint(dft.text)
@@ -1004,7 +1022,16 @@ def api_plan_preview():
                         except Exception:
                             continue
                 if not text:
-                    text = _unique_or_fallback(_fallback_plan_text(slot, weekday_theme), slot, d, weekday_theme, memory, local_fp)
+                    history_fp = posted_noon_fp if slot == "noon" else None
+                    text = _unique_or_fallback(
+                        _fallback_plan_text(slot, weekday_theme),
+                        slot,
+                        d,
+                        weekday_theme,
+                        memory,
+                        local_fp,
+                        history_fp,
+                    )
 
             plan.append(
                 {
@@ -1310,6 +1337,16 @@ def api_test_post():
         memory = load_memory(conf.uniqueness_memory_path) if conf else load_memory("post_memory.yaml")
         register_text(text, memory)
         save_memory(memory)
+        history = load_history(conf.post_history_path) if conf else load_history("post_history.yaml")
+        append_history(
+            text,
+            history,
+            slot="manual",
+            source="test-post",
+            tweet_id=tweet_id,
+            posted_at=datetime.now().isoformat(),
+        )
+        save_history(history)
         return jsonify({"ok": True, "tweet_id": tweet_id, "tweet_url": tweet_url, "message": "試験投稿しました。"})
     except Exception as e:
         return jsonify({"ok": False, "message": f"試験投稿エラー: {e}"}), 400
