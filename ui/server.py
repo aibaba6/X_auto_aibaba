@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import shlex
 import shutil
 import subprocess
@@ -288,20 +289,27 @@ def _fallback_plan_text(slot: str, weekday_theme: str) -> str:
         return f"{weekday_theme}。朝枠は学び重視で、保存したくなる実務示唆を1本投稿。"
     if slot == "noon":
         return (
-            "今日の要点は、AI導入で差が出るのはツール数より運用設計。\n"
-            "まず1工程だけ小さく自動化して、工数差を比較します。\n"
-            "#AI活用 #デザイン #業務改善"
+            "今日のAIニュースは、機能数より運用に乗る速度が差になりやすい流れです。\n"
+            "次の3-6ヶ月は、要約精度より『どの判断を任せるか』の設計で差が開きそう。\n"
+            "今日は1工程だけ、AIに渡す入力と確認観点をセットで見直します。\n\n"
+            "#AIニュース #デザイン #業務改善"
         )
     return "夕方は共感ベースで1本。冷静に振り返れる短文で、明日に繋がる行動提案を入れる。"
 
 
 def _jit_noon_placeholder(minutes_before: int) -> str:
     return (
-        "【投稿直前生成】この枠は最新AI情報を投稿時刻の直前に収集して作成します。\n"
+        "【投稿直前生成】この枠はAIニュースを投稿時刻の直前に要約して作成します。\n"
         f"- 収集タイミング: 投稿予定の約{minutes_before}分前\n"
-        "- 選定方針: 動画付き > 画像付き > テキスト\n"
-        "- 仕上げ: リンクなしで要点をブラッシュアップ"
+        "- 仕上げ: 要点要約 + 今後の予測 + 今日の小さな行動\n"
+        "- 形式: 通常投稿、リンクなし"
     )
+
+
+def _shuffled_indices(length: int, seed: int) -> list[int]:
+    order = list(range(length))
+    random.Random(seed).shuffle(order)
+    return order
 
 
 MORNING_EVERGREEN_TOPICS = [
@@ -622,7 +630,7 @@ def api_draft_lab_generate():
 
     slot_spec = {
         "morning": "170-280文字。基礎・応用・豆知識で有益、保存したくなる内容。",
-        "noon": "90-180文字。最新情報シェア想定、要点だけ、リンクなし。",
+        "noon": "90-180文字。AIニュース要約 + 今後の予測 + 今日の行動、リンクなし。",
         "evening": "110-220文字。共感ベースでゆるめ。デザイナーあるある・仕事あるある。",
     }[slot]
     slot_extra = (
@@ -712,16 +720,18 @@ def api_generate_image():
     provider = str(conf.get("morning_image_provider", "nanobanana_cmd")).strip() or "nanobanana_cmd"
     if provider == "nanobanana_cmd":
         tpl = (os.getenv("NANOBANANA_CMD_TEMPLATE") or "").strip()
+        freepik_ready = bool((os.getenv("FREEPIK_API_KEY") or "").strip())
         if not tpl:
-            return jsonify({"ok": False, "message": "NANOBANANA_CMD_TEMPLATE が未設定です。"}), 400
+            if not freepik_ready:
+                return jsonify({"ok": False, "message": "NANOBANANA_CMD_TEMPLATE が未設定です。"}), 400
         try:
-            parts = shlex.split(tpl)
+            parts = shlex.split(tpl) if tpl else []
         except Exception:
             return jsonify({"ok": False, "message": "NANOBANANA_CMD_TEMPLATE の書式が不正です。"}), 400
-        if not parts:
+        if tpl and not parts:
             return jsonify({"ok": False, "message": "NANOBANANA_CMD_TEMPLATE が空です。"}), 400
-        cmd = parts[0]
-        if not shutil.which(cmd):
+        cmd = parts[0] if parts else ""
+        if cmd and not shutil.which(cmd) and not freepik_ready:
             return jsonify(
                 {
                     "ok": False,
@@ -841,9 +851,6 @@ def api_plan_preview():
 
     plan = []
     local_fp: set[str] = set()
-    morning_idx = 0
-    evening_idx = 0
-
     for i in range(total_days):
         d = start_date + timedelta(days=i)
         if not every_day and d.weekday() >= 5:
@@ -863,8 +870,9 @@ def api_plan_preview():
 
             if slot == "morning":
                 picked = None
-                for k in range(len(MORNING_EVERGREEN_TOPICS)):
-                    candidate = _morning_evergreen_post(morning_idx + k)
+                morning_order = _shuffled_indices(len(MORNING_EVERGREEN_TOPICS), d.toordinal() * 11 + i)
+                for order_idx in morning_order:
+                    candidate = _morning_evergreen_post(order_idx)
                     if not is_duplicate(candidate, memory):
                         from src.x_autopost_tool.uniqueness import fingerprint
 
@@ -876,7 +884,6 @@ def api_plan_preview():
                 if not picked:
                     picked = _unique_or_fallback("", "morning", d, weekday_theme, memory, local_fp)
                 text = picked
-                morning_idx += 1
                 plan.append(
                     {
                         "date": d.isoformat(),
@@ -891,8 +898,9 @@ def api_plan_preview():
 
             if slot == "evening":
                 picked = None
-                for k in range(len(EVENING_ARUARU_TOPICS)):
-                    candidate = _evening_aruaru_post(evening_idx + k)
+                evening_order = _shuffled_indices(len(EVENING_ARUARU_TOPICS), d.toordinal() * 17 + i)
+                for order_idx in evening_order:
+                    candidate = _evening_aruaru_post(order_idx)
                     if not is_duplicate(candidate, memory):
                         from src.x_autopost_tool.uniqueness import fingerprint
 
@@ -904,7 +912,6 @@ def api_plan_preview():
                 if not picked:
                     picked = _unique_or_fallback("", "evening", d, weekday_theme, memory, local_fp)
                 text = picked
-                evening_idx += 1
                 plan.append(
                     {
                         "date": d.isoformat(),

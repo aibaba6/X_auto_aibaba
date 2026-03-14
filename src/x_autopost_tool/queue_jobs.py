@@ -1,48 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
-from typing import Any
 
-from .llm import build_quote_post
+from .collectors import fetch_rss_items, filter_blocked
+from .llm import build_noon_news_post
 from .queue_store import load_queue_items, save_queue_items
-from .rules import filter_quote_candidates, score_quote_candidate
+from .schedule_utils import now_local, parse_scheduled_datetime
 from .settings import AppConfig
 from .uniqueness import is_duplicate, load_memory, register_text, save_memory
-from .x_client import XClient
-
-
-def _parse_schedule_at(value: str) -> datetime | None:
-    try:
-        return datetime.fromisoformat(value)
-    except Exception:
-        return None
-
-
-def _engagement_score(c) -> int:
-    return c.like_count + c.retweet_count * 3 + c.reply_count * 2 + c.quote_count * 2
-
-
-def _pick_noon_latest_candidate(candidates, config: AppConfig):
-    ranked = sorted(
-        candidates,
-        key=lambda c: (
-            1 if c.has_video else 0,
-            1 if c.has_image else 0,
-            _engagement_score(c),
-            score_quote_candidate(c, config),
-        ),
-        reverse=True,
-    )
-    if config.quote_prefer_video:
-        videos = [c for c in ranked if c.has_video]
-        if videos:
-            return videos[0]
-        if config.quote_fallback_to_image:
-            images = [c for c in ranked if c.has_image]
-            if images:
-                return images[0]
-    return ranked[0] if ranked else None
 
 def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False) -> int:
     path = Path(queue_path)
@@ -58,10 +24,14 @@ def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False
         print("[noon-refresh] latest_share_mode is false, skip")
         return 0
 
-    now = datetime.now()
+    now = now_local(config)
     changed = 0
-    x = XClient()
     memory = load_memory(config.uniqueness_memory_path)
+    source_items = fetch_rss_items(config.rss_feeds, max_items=config.max_input_items)
+    source_items = filter_blocked(source_items, config.blocked_keywords)
+    if not source_items:
+        print("[noon-refresh] rss source is empty")
+        return 0
 
     for item in queue:
         slot = str(item.get("slot", "")).strip()
@@ -69,39 +39,37 @@ def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False
         if slot != "noon" or not schedule_at:
             continue
 
-        scheduled_dt = _parse_schedule_at(schedule_at)
+        scheduled_dt = parse_scheduled_datetime(schedule_at, config)
         if not scheduled_dt:
             continue
         window_start = scheduled_dt - timedelta(minutes=capture_minutes)
         if not (window_start <= now < scheduled_dt):
             continue
 
-        refreshed_at = _parse_schedule_at(str(item.get("last_refreshed_at", "")).strip())
+        refreshed_at = parse_scheduled_datetime(str(item.get("last_refreshed_at", "")).strip(), config)
         if refreshed_at and (now - refreshed_at) < timedelta(minutes=10):
             continue
 
-        try:
-            candidates = x.search_multi(config.x_noon_queries, per_query=config.quote_candidates_limit)
-        except Exception as e:
-            print(f"[noon-refresh] x search error: {e}")
-            continue
-        candidates = filter_quote_candidates(candidates, config)
-        candidates = [c for c in candidates if score_quote_candidate(c, config) >= config.quote_min_score]
-        if not candidates:
-            print(f"[noon-refresh] no candidates for {schedule_at}")
-            continue
-
-        best = _pick_noon_latest_candidate(candidates, config)
-        if not best:
+        subset = source_items[: min(5, len(source_items))]
+        draft = build_noon_news_post(
+            model=config.model,
+            items=subset,
+            tone=config.tone,
+            audience=config.audience,
+            prediction_horizon=config.prediction_horizon,
+            weekday_theme=config.weekly_themes.get(now.strftime("%A").lower(), "通常テーマ"),
+        )
+        if not draft:
+            print(f"[noon-refresh] draft build failed for {schedule_at}")
             continue
 
-        text = build_quote_post(config.model, best, tone=config.tone, audience=config.audience)
+        text = draft.text
         if is_duplicate(text, memory):
             print(f"[noon-refresh] duplicate skipped schedule={schedule_at}")
             continue
         item["text"] = text
-        item["source_tweet_id"] = best.tweet_id
-        item["source_author"] = best.author
+        item["source_tweet_id"] = ""
+        item["source_author"] = "rss-summary"
         item["last_refreshed_at"] = now.replace(microsecond=0).isoformat()
         item["refresh_mode"] = "jit_noon"
         changed += 1
@@ -109,7 +77,7 @@ def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False
         print(
             "[noon-refresh] updated "
             f"schedule={schedule_at} "
-            f"target={best.tweet_id} video={best.has_video} image={best.has_image}"
+            f"reason={draft.reason or 'noon-news'}"
         )
 
     if changed and not dry_run:

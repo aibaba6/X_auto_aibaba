@@ -66,7 +66,15 @@ def _remote_load() -> list[dict]:
     req = request.Request(_remote_url(), headers=_remote_headers(), method="GET")
     with request.urlopen(req, timeout=15) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
+    if isinstance(payload, dict):
+        print(
+            "[QUEUE SYNC LOAD] "
+            f"ok keys={','.join(sorted(payload.keys()))} "
+            f"queue_type={type(payload.get('queue')).__name__}"
+        )
     queue = payload.get("queue", [])
+    if isinstance(queue, list):
+        print(f"[QUEUE SYNC LOAD] count={len(queue)}")
     return queue if isinstance(queue, list) else []
 
 
@@ -86,7 +94,10 @@ def load_queue_items(queue_path: str | None) -> list[dict]:
         print(f"[QUEUE SYNC ERROR] load http={e.code}")
     except Exception as e:
         print(f"[QUEUE SYNC ERROR] load {e}")
-    return []
+    fallback = _local_load(queue_path)
+    if fallback:
+        print(f"[QUEUE SYNC FALLBACK] local load count={len(fallback)}")
+    return fallback
 
 
 def save_queue_items(queue_path: str | None, items: list[dict]) -> None:
@@ -99,3 +110,4 @@ def save_queue_items(queue_path: str | None, items: list[dict]) -> None:
         print(f"[QUEUE SYNC ERROR] save http={e.code}")
     except Exception as e:
         print(f"[QUEUE SYNC ERROR] save {e}")
+    _local_save(queue_path, items)

@@ -120,6 +120,7 @@ media:
   morning_retry_max_attempts: 3
   noon_reply_source_link: true
 schedule:
+  timezone: Asia/Tokyo
   cron_like_note: 外部cronで 07:00 / 12:00 / 18:00 実行
   required_daily_slots:
   - morning
@@ -135,12 +136,13 @@ schedule:
       enable_quote_posts: false
     noon:
       time: '12:00'
-      style: サクッと読める。1メッセージで要点を伝える。
+      style: AIニュースの要点要約 + 今後の予測 + 今日の小さな行動。リンクなし。
       min_chars: 90
       max_chars: 180
       posts_per_run: 1
-      enable_quote_posts: true
+      enable_quote_posts: false
       latest_share_mode: true
+      latest_capture_minutes_before: 30
     evening:
       time: '18:00'
       style: '共感ベースでゆるめ。デザイナーあるある・仕事あるある中心。 自分語りしすぎず、読者が「わかる」と感じる小さな情景を入れる。 攻撃的/煽り口調は禁止。最後はやさしい締めで終える。

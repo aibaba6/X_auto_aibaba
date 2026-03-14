@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime
 import time
+from pathlib import Path
 
 from .collectors import fetch_rss_items, filter_blocked, rank_quote_candidates
-from .llm import build_post_drafts, build_quote_post
+from .llm import build_noon_news_post, build_post_drafts, build_quote_post
 from .media_tools import generate_image_with_freepik_mystic, generate_image_with_nanobanana
 from .models import ContentItem, DraftPost
 from .pdf_knowledge import get_pdf_knowledge_snippets
 from .queue_store import load_queue_items, queue_sync_enabled, save_queue_items
+from .schedule_utils import now_local, parse_scheduled_datetime
 from .rules import filter_quote_candidates, score_quote_candidate, validate_post_draft
 from .settings import AppConfig
 from .uniqueness import fingerprint, is_duplicate, load_memory, register_text, save_memory
@@ -180,7 +182,7 @@ def _safe_create_reply(x: XClient, text: str, in_reply_to_tweet_id: str, label: 
         return None
 
 
-def _find_due_queue_item(items: list[dict], slot: str, now: datetime) -> tuple[int, dict] | None:
+def _find_due_queue_item(items: list[dict], slot: str, now: datetime, config: AppConfig) -> tuple[int, dict] | None:
     matches: list[tuple[datetime, int, dict]] = []
     for idx, item in enumerate(items):
         if not isinstance(item, dict):
@@ -190,9 +192,8 @@ def _find_due_queue_item(items: list[dict], slot: str, now: datetime) -> tuple[i
         schedule_at = str(item.get("schedule_at", "")).strip()
         if not schedule_at:
             continue
-        try:
-            due_at = datetime.fromisoformat(schedule_at)
-        except Exception:
+        due_at = parse_scheduled_datetime(schedule_at, config)
+        if not due_at:
             continue
         if due_at <= now:
             matches.append((due_at, idx, item))
@@ -221,6 +222,7 @@ def _post_due_queue_item(
     now: datetime,
     memory,
     queue_path: str | None,
+    recent_self_posts: list[str] | None = None,
 ) -> bool:
     if not queue_path and not queue_sync_enabled():
         print("[QUEUE SKIP] queue_path未設定")
@@ -238,15 +240,39 @@ def _post_due_queue_item(
     if not queue:
         print(f"[QUEUE SKIP] queue file not found: {queue_label}")
         return False
-    found = _find_due_queue_item(queue, resolved_slot, now)
+    found = _find_due_queue_item(queue, resolved_slot, now, config)
     if not found:
         print(f"[QUEUE SKIP] due item not found slot={resolved_slot} items={len(queue)}")
         return False
 
     idx, item = found
     text = str(item.get("text", "")).strip()
+    refresh_mode = str(item.get("refresh_mode", "")).strip()
+    if not text and refresh_mode == "jit_noon" and resolved_slot == "noon":
+        source_items = fetch_rss_items(config.rss_feeds, max_items=config.max_input_items)
+        source_items = filter_blocked(source_items, config.blocked_keywords)
+        weekday_theme = config.weekly_themes.get(_weekday_key(now), "通常テーマ")
+        draft = build_noon_news_post(
+            model=config.model,
+            items=source_items[: min(5, len(source_items))],
+            tone=config.tone,
+            audience=config.audience,
+            prediction_horizon=config.prediction_horizon,
+            weekday_theme=weekday_theme,
+            recent_self_posts=recent_self_posts,
+        )
+        if draft:
+            text = draft.text
+            item["text"] = text
+            item["last_refreshed_at"] = now.replace(microsecond=0).isoformat()
+            save_queue_items(queue_path, queue)
+            print(f"[QUEUE REFRESH] slot=noon schedule_at={item.get('schedule_at', '')} reason={draft.reason}")
     if not text:
-        return False
+        print(
+            "[QUEUE HOLD] "
+            f"slot={resolved_slot} schedule_at={item.get('schedule_at', '')} refresh_mode={refresh_mode or 'none'}"
+        )
+        return True
 
     media_path = _resolve_media_path(str(item.get("media_path", "")))
     media_paths = [media_path] if media_path else None
@@ -279,7 +305,7 @@ def _post_due_queue_item(
 
 
 def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None = None) -> None:
-    now = datetime.now()
+    now = now_local(config)
     today_key = _weekday_key(now)
     weekday_theme = config.weekly_themes.get(today_key, "速報と実務示唆を重視した通常投稿")
     resolved_slot = _resolve_slot(now, slot)
@@ -299,7 +325,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     recent_post_fingerprints = _fingerprints(recent_self_posts)
     print(f"[RECENT POSTS] count={len(recent_self_posts)}")
 
-    if _post_due_queue_item(x, config, resolved_slot, now, memory, queue_path):
+    if _post_due_queue_item(x, config, resolved_slot, now, memory, queue_path, recent_self_posts=recent_self_posts):
         return
 
     print("[1/5] RSS収集")
@@ -319,55 +345,30 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         return
 
     if resolved_slot == "noon" and slot_latest_share_mode:
-        print("[2/5] 昼枠: 最新情報の引用候補検索")
-        noon_candidates = _safe_search_multi(
-            x, config.x_noon_queries, per_query=config.quote_candidates_limit, label="noon-latest"
+        print("[2/5] 昼枠: AIニュース要約投稿を生成")
+        noon_draft = build_noon_news_post(
+            model=config.model,
+            items=items[: min(5, len(items))],
+            tone=config.tone,
+            audience=config.audience,
+            prediction_horizon=config.prediction_horizon,
+            weekday_theme=weekday_theme,
+            recent_self_posts=recent_self_posts,
         )
-        noon_candidates = filter_quote_candidates(noon_candidates, config)
-        noon_candidates = [c for c in noon_candidates if score_quote_candidate(c, config) >= config.quote_min_score]
-        if noon_candidates:
-            ranked_noon = _rank_noon_latest_candidates(noon_candidates, config)
-            forbidden_hits = 0
-            for best_noon in ranked_noon[:5]:
-                print(
-                    "[3/5] 昼枠引用生成 "
-                    f"target={best_noon.tweet_id} "
-                    f"eng={_engagement_score(best_noon)} "
-                    f"video={best_noon.has_video} image={best_noon.has_image}"
-                )
-                quote_text = build_quote_post(config.model, best_noon, tone=config.tone, audience=config.audience)
-                if is_duplicate(quote_text, memory) or _is_recent_duplicate(quote_text, recent_post_fingerprints):
-                    print("[NOON SKIP] 重複投稿のため通常投稿へフォールバック")
-                elif config.dry_run:
-                    print(f"[DRY-RUN NOON QUOTE] {quote_text}\n  quote_tweet_id={best_noon.tweet_id}")
+        if noon_draft and not (
+            is_duplicate(noon_draft.text, memory) or _is_recent_duplicate(noon_draft.text, recent_post_fingerprints)
+        ):
+            if config.dry_run:
+                print(f"[DRY-RUN NOON NEWS] {noon_draft.text}")
+                return
+            else:
+                tweet_id = _safe_create_post(x, noon_draft.text, label="main-post-noon-news")
+                if tweet_id:
+                    register_text(noon_draft.text, memory)
+                    save_memory(memory)
+                    print(f"noon news posted: {tweet_id}")
                     return
-                else:
-                    quote_id, quote_err = _try_create_post(
-                        x,
-                        quote_text,
-                        quote_tweet_id=best_noon.tweet_id,
-                    )
-                    if not quote_id:
-                        if _is_quote_forbidden_error(quote_err):
-                            forbidden_hits += 1
-                            print(f"[NOON SKIP] 引用不可 target={best_noon.tweet_id}")
-                            if forbidden_hits >= 2:
-                                print("[NOON FALLBACK] 引用不可候補が続いたため通常投稿へ")
-                                break
-                        else:
-                            print(f"[X POST ERROR] noon-quote: {quote_err}")
-                            print(f"[NOON RETRY] 引用投稿不可 target={best_noon.tweet_id} 次候補へ")
-                        continue
-                    elif config.media_noon_reply_source_link:
-                        source_url = f"https://x.com/{best_noon.author}/status/{best_noon.tweet_id}"
-                        reply_text = f"出典メモ: {source_url}"
-                        _safe_create_reply(x, reply_text, in_reply_to_tweet_id=quote_id, label="noon-source-reply")
-                    if quote_id:
-                        register_text(quote_text, memory)
-                        save_memory(memory)
-                        print(f"noon quote posted: {quote_id}")
-                        return
-        print("[NOON FALLBACK] 候補不足のため通常投稿へ")
+        print("[NOON FALLBACK] 昼枠専用生成を通常投稿生成へフォールバック")
 
     print("[2/5] 投稿案生成")
     drafts = build_post_drafts(

@@ -652,7 +652,7 @@ function renderPlanRows(items) {
         <td>${row.theme}</td>
         <td class="draft-cell">${
           row.refresh_mode === "jit_noon"
-            ? "投稿30分前に自動生成（動画>画像>テキスト, リンクなし）"
+            ? "投稿30分前に自動生成（AIニュース要約 + 予測 + 行動, リンクなし）"
             : row.text
         }</td>
       </tr>

@@ -113,7 +113,10 @@ def generate_image_with_nanobanana(
       NANOBANANA_CMD_TEMPLATE='nanobanana --prompt "{prompt}" --out "{output}"'
     """
     tpl = os.getenv("NANOBANANA_CMD_TEMPLATE", "").strip()
+    fallback_freepik = bool((os.getenv("FREEPIK_API_KEY") or "").strip())
     if not tpl:
+        if fallback_freepik:
+            return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
         return None, "auto", "NANOBANANA_CMD_TEMPLATE is not set"
 
     out_dir = Path(output_dir)
@@ -128,13 +131,22 @@ def generate_image_with_nanobanana(
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "").strip()
             print(f"[media] nanobanana failed: {err[:300]}")
+            if fallback_freepik:
+                print("[media] falling back to Freepik Mystic")
+                return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
             return None, used_mode, err[:1200]
         if not out_path.exists():
             print("[media] nanobanana finished but output not found")
+            if fallback_freepik:
+                print("[media] output missing, falling back to Freepik Mystic")
+                return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
             return None, used_mode, "output file was not created"
         return str(out_path), used_mode, ""
     except Exception as e:
         print(f"[media] nanobanana exception: {e}")
+        if fallback_freepik:
+            print("[media] exception, falling back to Freepik Mystic")
+            return generate_image_with_freepik_mystic(post_text, output_dir, visual_mode=visual_mode)
         return None, used_mode, str(e)
 
 

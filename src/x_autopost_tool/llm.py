@@ -196,3 +196,62 @@ def build_quote_post(model: str, candidate: QuoteCandidate, tone: str, audience:
     text = normalize_x_post_text(res.output_text.strip(), slot_name="noon")
     text = URL_RE.sub("", text).strip()
     return text
+
+
+def build_noon_news_post(
+    model: str,
+    items: list[ContentItem],
+    tone: str,
+    audience: str,
+    prediction_horizon: str,
+    weekday_theme: str,
+    recent_self_posts: list[str] | None = None,
+) -> DraftPost | None:
+    payload = [
+        {
+            "title": i.title,
+            "summary": i.summary[:320],
+            "url": i.url,
+        }
+        for i in items[:5]
+    ]
+    if not payload:
+        return None
+
+    prompt = f"""
+対象読者: {audience}
+文体: {tone}
+曜日テーマ: {weekday_theme}
+予測レンジ: {prediction_horizon}
+直近の自分の投稿（重複回避用）: {json.dumps((recent_self_posts or [])[:6], ensure_ascii=False)}
+
+以下のニュース候補を材料に、昼枠向けのX投稿文を1本だけ作成してください。
+- 日本語90-180文字
+- AIニュースの要点を最初の1-2文で簡潔に要約
+- その後に「これからどう効いてくるか」の予測を1文入れる
+- 最後に、実務者が今日試せる小さな行動を1文入れる
+- URLは本文に含めない
+- 引用投稿前提ではなく、通常投稿として成立させる
+- 冷静で実務的、少しカジュアル
+- 同じ語尾を連続させない
+- 2-4段落、必要なら短い箇条書き1-2項目
+- ハッシュタグは文末に2-3個
+- JSONのみで返す: {{"text":"...","reason":"..."}}
+
+ニュース候補:
+{json.dumps(payload, ensure_ascii=False)}
+""".strip()
+
+    res = _client().responses.create(
+        model=model,
+        input=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+    )
+    parsed: dict[str, Any] = json.loads(res.output_text)
+    text = normalize_x_post_text(str(parsed.get("text", "")).strip(), slot_name="noon")
+    text = URL_RE.sub("", text).strip()
+    if not text:
+        return None
+    return DraftPost(text=text, reason=str(parsed.get("reason", "")).strip() or "noon-news")
