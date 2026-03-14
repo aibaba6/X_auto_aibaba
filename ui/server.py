@@ -297,19 +297,28 @@ def _fallback_plan_text(slot: str, weekday_theme: str) -> str:
     return "夕方は共感ベースで1本。冷静に振り返れる短文で、明日に繋がる行動提案を入れる。"
 
 
-def _jit_noon_placeholder(minutes_before: int) -> str:
-    return (
-        "【投稿直前生成】この枠はAIニュースを投稿時刻の直前に要約して作成します。\n"
-        f"- 収集タイミング: 投稿予定の約{minutes_before}分前\n"
-        "- 仕上げ: 要点要約 + 今後の予測 + 今日の小さな行動\n"
-        "- 形式: 通常投稿、リンクなし"
-    )
+NOON_PLACEHOLDER_VARIANTS = [
+    "【投稿直前生成】この枠はAIニュースを投稿時刻の直前に要約して作成します。\n- 収集タイミング: 投稿予定の約{minutes_before}分前\n- 仕上げ: 要点要約 + 今後の予測 + 今日の小さな行動\n- 形式: 通常投稿、リンクなし",
+    "【直前更新】昼枠は投稿予定時刻の少し前にAIニュースを取り込み、要点を短く整理して投稿します。\n- 更新タイミング: 約{minutes_before}分前\n- 含める内容: いま重要な変化 / これからの予測 / 今日の実験\n- URLは本文に入れません",
+    "【最新反映】この昼投稿は固定文ではなく、直前に集めたAIニュースから組み立てます。\n- 取得タイミング: 投稿予定の約{minutes_before}分前\n- 構成: 要約 / 今後の見立て / 小さな行動\n- 仕上げはリンクなしの通常投稿です",
+]
+
+
+def _jit_noon_placeholder(minutes_before: int, variant: int = 0) -> str:
+    template = NOON_PLACEHOLDER_VARIANTS[variant % len(NOON_PLACEHOLDER_VARIANTS)]
+    return template.format(minutes_before=minutes_before)
 
 
 def _shuffled_indices(length: int, seed: int) -> list[int]:
     order = list(range(length))
     random.Random(seed).shuffle(order)
     return order
+
+
+def _rotation_start(seed: int, length: int) -> int:
+    if length <= 0:
+        return 0
+    return seed % length
 
 
 MORNING_EVERGREEN_TOPICS = [
@@ -364,15 +373,32 @@ MORNING_EVERGREEN_TOPICS = [
 ]
 
 
-def _morning_evergreen_post(index: int) -> str:
+def _morning_evergreen_post(index: int, variant: int = 0) -> str:
     t = MORNING_EVERGREEN_TOPICS[index % len(MORNING_EVERGREEN_TOPICS)]
-    return (
-        f"🔍 {t['title']}\n\n"
-        f"・{t['insight']}\n"
-        "・意外とここを整えるだけで、見やすさと信頼感は変わります。\n\n"
-        f"まずは {t['action']}\n\n"
-        f"{t['tags']}"
-    )
+    variants = [
+        (
+            f"🔍 {t['title']}\n\n"
+            f"・{t['insight']}\n"
+            "・意外とここを整えるだけで、見やすさと信頼感は変わります。\n\n"
+            f"まずは {t['action']}\n\n"
+            f"{t['tags']}"
+        ),
+        (
+            f"{t['title']}\n\n"
+            f"{t['insight']}\n"
+            "派手な改善より、基礎を1つ整えた方が全体の印象は変わりやすいです。\n\n"
+            f"今日は {t['action']}\n\n"
+            f"{t['tags']}"
+        ),
+        (
+            f"朝の見直しポイント: {t['title']}\n\n"
+            f"{t['insight']}\n"
+            "触る場所を増やす前に、土台を1つだけ整えるのが近道。\n\n"
+            f"今週は {t['action']}\n\n"
+            f"{t['tags']}"
+        ),
+    ]
+    return variants[variant % len(variants)]
 
 
 EVENING_ARUARU_TOPICS = [
@@ -404,9 +430,14 @@ EVENING_ARUARU_TOPICS = [
 ]
 
 
-def _evening_aruaru_post(index: int) -> str:
+def _evening_aruaru_post(index: int, variant: int = 0) -> str:
     t = EVENING_ARUARU_TOPICS[index % len(EVENING_ARUARU_TOPICS)]
-    return f"{t['title']}\n\n{t['body']}\n\n{t['tags']}"
+    variants = [
+        f"{t['title']}\n\n{t['body']}\n\n{t['tags']}",
+        f"{t['title']}\n\n{t['body']}\n今日は抱え込みすぎず、1つ決めたら十分です。\n\n{t['tags']}",
+        f"{t['title']}\n\n{t['body']}\nそんな日ほど、次に迷わない一言だけ残して終えるのもありです。\n\n{t['tags']}",
+    ]
+    return variants[variant % len(variants)]
 
 
 EVENING_FALLBACK_VARIANTS = [
@@ -834,6 +865,7 @@ def api_plan_preview():
     count = int(request.json.get("count", 7))
     every_day = bool(request.json.get("every_day", True))
     start_date_str = str(request.json.get("start_date", date.today().isoformat()))
+    generation_nonce = int(request.json.get("generation_nonce", 0) or 0)
     start_date = date.fromisoformat(start_date_str)
 
     if unit not in {"days", "weeks", "months"}:
@@ -851,6 +883,7 @@ def api_plan_preview():
 
     plan = []
     local_fp: set[str] = set()
+    generation_seed = generation_nonce * 101
     for i in range(total_days):
         d = start_date + timedelta(days=i)
         if not every_day and d.weekday() >= 5:
@@ -870,9 +903,11 @@ def api_plan_preview():
 
             if slot == "morning":
                 picked = None
-                morning_order = _shuffled_indices(len(MORNING_EVERGREEN_TOPICS), d.toordinal() * 11 + i)
+                morning_seed = d.toordinal() * 11 + i + generation_seed
+                morning_variant = (generation_nonce + i) % 3
+                morning_order = _shuffled_indices(len(MORNING_EVERGREEN_TOPICS), morning_seed)
                 for order_idx in morning_order:
-                    candidate = _morning_evergreen_post(order_idx)
+                    candidate = _morning_evergreen_post(order_idx, variant=morning_variant)
                     if not is_duplicate(candidate, memory):
                         from src.x_autopost_tool.uniqueness import fingerprint
 
@@ -898,9 +933,11 @@ def api_plan_preview():
 
             if slot == "evening":
                 picked = None
-                evening_order = _shuffled_indices(len(EVENING_ARUARU_TOPICS), d.toordinal() * 17 + i)
+                evening_seed = d.toordinal() * 17 + i + generation_seed
+                evening_variant = (generation_nonce + i + 1) % 3
+                evening_order = _shuffled_indices(len(EVENING_ARUARU_TOPICS), evening_seed)
                 for order_idx in evening_order:
-                    candidate = _evening_aruaru_post(order_idx)
+                    candidate = _evening_aruaru_post(order_idx, variant=evening_variant)
                     if not is_duplicate(candidate, memory):
                         from src.x_autopost_tool.uniqueness import fingerprint
 
@@ -925,12 +962,12 @@ def api_plan_preview():
                 continue
 
             if slot == "noon" and latest_share_mode:
-                text = _jit_noon_placeholder(latest_capture_minutes)
+                text = _jit_noon_placeholder(latest_capture_minutes, variant=generation_nonce + i)
             else:
                 text = ""
                 if items and os.getenv("OPENAI_API_KEY"):
                     for attempt in range(4):
-                        subset = _rotated_items(items, seed=(i * 7 + attempt * 3), take=8)
+                        subset = _rotated_items(items, seed=(i * 7 + attempt * 3 + generation_seed), take=8)
                         try:
                             drafts = build_post_drafts(
                                 model=config.model,
@@ -950,7 +987,9 @@ def api_plan_preview():
                                 knowledge_snippets=slot_pdf_knowledge,
                             )
                             unique = None
-                            for dft in drafts:
+                            rotation = _rotation_start(generation_nonce + i + attempt, len(drafts))
+                            ordered_drafts = drafts[rotation:] + drafts[:rotation]
+                            for dft in ordered_drafts:
                                 if not is_duplicate(dft.text, memory):
                                     from src.x_autopost_tool.uniqueness import fingerprint
 
@@ -978,7 +1017,7 @@ def api_plan_preview():
                 }
             )
 
-    return jsonify({"ok": True, "count": len(plan), "plan": plan})
+    return jsonify({"ok": True, "count": len(plan), "plan": plan, "generation_nonce": generation_nonce})
 
 
 @app.get("/api/target_account")

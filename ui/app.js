@@ -79,6 +79,7 @@ let currentQueue = [];
 let generatedMediaPath = "";
 let currentPage = "dashboard";
 let imageCooldownTimer = null;
+let planGenerationNonce = 0;
 
 function slotLabel(slot) {
   if (slot === "morning") return "朝";
@@ -793,6 +794,7 @@ async function buildPlan() {
   planTbody.innerHTML = "";
   const p = startProgress("plan", planProgressWrap, planProgressBar, planProgressText, 8000);
   try {
+    planGenerationNonce += 1;
     const data = await fetchJson("/api/plan_preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -801,8 +803,10 @@ async function buildPlan() {
         count: Number(planCount.value || 1),
         every_day: !!planEveryDay.checked,
         start_date: planStartDate.value,
+        generation_nonce: planGenerationNonce,
       }),
     });
+    planGenerationNonce = Number(data.generation_nonce || planGenerationNonce);
     planMessage.textContent = `${data.count}件の投稿予定を作成しました。`;
     currentPlan = data.plan || [];
     renderPlanRows(currentPlan);
