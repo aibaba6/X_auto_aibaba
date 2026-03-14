@@ -1410,7 +1410,7 @@ function setPage(page) {
   });
   topPageButtons.forEach((b) => b.classList.toggle("active", b.dataset.page === page));
   railPageButtons.forEach((b) => b.classList.toggle("active", b.dataset.page === page));
-  railHint.textContent = pageMeta[page] || "";
+  if (railHint) railHint.textContent = pageMeta[page] || "";
   localStorage.setItem("ui_current_page", page);
 }
 

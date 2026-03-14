@@ -24,13 +24,31 @@
           <strong>X投稿IQ</strong>
         </div>
         <nav class="menu">
-          <button class="pill active" data-page="dashboard">ダッシュボード</button>
-          <button class="pill" data-page="generation">投稿生成</button>
-          <button class="pill" data-page="queue">投稿キュー</button>
-          <button class="pill" data-page="settings">設定</button>
+          <button class="pill active" data-page="dashboard">
+            <span class="material-symbols-rounded">dashboard</span>
+            <span>ダッシュボード</span>
+          </button>
+          <button class="pill" data-page="generation">
+            <span class="material-symbols-rounded">auto_awesome</span>
+            <span>投稿生成</span>
+          </button>
+          <button class="pill" data-page="planner">
+            <span class="material-symbols-rounded">calendar_month</span>
+            <span>投稿計画</span>
+          </button>
+          <button class="pill" data-page="queue">
+            <span class="material-symbols-rounded">schedule</span>
+            <span>投稿キュー</span>
+          </button>
+          <button class="pill" data-page="settings">
+            <span class="material-symbols-rounded">settings</span>
+            <span>設定</span>
+          </button>
         </nav>
         <div class="top-actions">
-          <button class="icon-btn" id="refreshBtn">⟳</button>
+          <button class="icon-btn" id="refreshBtn" aria-label="再読込">
+            <span class="material-symbols-rounded">refresh</span>
+          </button>
           <button class="avatar">U</button>
         </div>
       </header>
@@ -47,15 +65,6 @@
       </section>
 
       <section class="layout">
-        <aside class="rail card">
-          <button class="rail-btn active" data-page="dashboard" title="ダッシュボード"><span class="material-symbols-rounded">home</span></button>
-          <button class="rail-btn" data-page="generation" title="投稿生成とスロット"><span class="material-symbols-rounded">auto_awesome</span></button>
-          <button class="rail-btn" data-page="planner" title="投稿計画"><span class="material-symbols-rounded">calendar_month</span></button>
-          <button class="rail-btn" data-page="queue" title="投稿キュー確認"><span class="material-symbols-rounded">check_circle</span></button>
-          <button class="rail-btn" data-page="settings" title="設定"><span class="material-symbols-rounded">settings</span></button>
-          <p class="rail-hint" id="railHint">ダッシュボード</p>
-        </aside>
-
         <div class="main-grid">
           <article class="card summary" id="section-dashboard" data-page="dashboard">
             <div class="card-head">
@@ -448,6 +457,14 @@
         </div>
       </section>
     </main>
+
+    <div class="image-modal" id="imageModal" aria-hidden="true">
+      <div class="image-modal-backdrop"></div>
+      <div class="image-modal-dialog" role="dialog" aria-modal="true" aria-label="画像プレビュー">
+        <img id="imageModalPreview" alt="expanded preview" />
+        <button type="button" class="ghost image-modal-close" id="imageModalCloseBtn">×</button>
+      </div>
+    </div>
 
     <script src="./app.js"></script>
   </body>
