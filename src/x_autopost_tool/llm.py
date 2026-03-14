@@ -17,6 +17,32 @@ LEADING_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 COPULA_DA_RE = re.compile(r"([^\n。！？]{1,40})だ。")
+LEADING_BANNED_PHRASE_RE = re.compile(
+    r"^\s*(今日は|今回は|ここで|まずは|〜してみましょう|してみましょう|していきます|見ていきます|考えていきます)\s*"
+)
+LOW_DENSITY_PHRASES = [
+    "今日は",
+    "今回は",
+    "ここで",
+    "まずは",
+    "してみましょう",
+    "していきます",
+]
+CONCLUSION_HINTS = [
+    "重要",
+    "肝",
+    "本質",
+    "結局",
+    "必要",
+    "効く",
+    "決まる",
+    "左右",
+    "変わる",
+    "設計",
+    "改善",
+    "順序",
+    "比較",
+]
 
 
 def _client() -> OpenAI:
@@ -29,6 +55,67 @@ def _slot_default_tags(slot_name: str) -> list[str]:
     if slot_name == "noon":
         return ["#AI", "#AIニュース", "#デザイン"]
     return ["#デザイナーあるある", "#デザイン", "#仕事あるある"]
+
+
+def _strip_banned_leading_phrases(text: str) -> str:
+    cleaned = (text or "").strip()
+    prev = None
+    while prev != cleaned:
+        prev = cleaned
+        cleaned = LEADING_BANNED_PHRASE_RE.sub("", cleaned).lstrip("、。・:： ")
+    return cleaned.strip()
+
+
+def _sentences_from_body(text: str) -> list[str]:
+    body = HASHTAG_RE.sub("", text or "").strip()
+    parts = re.split(r"(?<=[。！？])|\n+", body)
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def _is_conclusion_like(sentence: str) -> bool:
+    s = sentence.strip()
+    if len(s) < 10:
+        return False
+    if "?" in s or "？" in s:
+        return False
+    return any(hint in s for hint in CONCLUSION_HINTS) or "は" in s
+
+
+def _reorder_to_conclusion_first(text: str) -> str:
+    sentences = _sentences_from_body(text)
+    if len(sentences) < 2:
+        return text.strip()
+    first = sentences[0]
+    if _is_conclusion_like(first):
+        return text.strip()
+    for idx, sentence in enumerate(sentences[1:], start=1):
+        if _is_conclusion_like(sentence):
+            reordered = [sentence] + sentences[:idx] + sentences[idx + 1 :]
+            tag_match = re.search(r"(\n\n#[\s\S]+)$", text.strip())
+            tag_block = tag_match.group(1) if tag_match else ""
+            body = "\n".join(reordered).strip()
+            return f"{body}{tag_block}".strip()
+    return text.strip()
+
+
+def enforce_post_density_rules(text: str, slot_name: str = "morning") -> str:
+    raw = (text or "").strip()
+    body, _, tail = raw.partition("\n\n#")
+    body = _strip_banned_leading_phrases(body)
+    lines = []
+    for ln in body.splitlines():
+        cleaned = ln.strip()
+        cleaned = _strip_banned_leading_phrases(cleaned)
+        for phrase in LOW_DENSITY_PHRASES:
+            if cleaned.startswith(phrase):
+                cleaned = cleaned[len(phrase) :].lstrip("、。・:： ")
+        lines.append(cleaned)
+    body = "\n".join([ln for ln in lines if ln]).strip()
+    body = _reorder_to_conclusion_first(body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    if tail:
+        return f"{body}\n\n#{tail}".strip()
+    return body
 
 
 def normalize_x_post_text(text: str, slot_name: str = "morning") -> str:
@@ -47,8 +134,10 @@ def normalize_x_post_text(text: str, slot_name: str = "morning") -> str:
         cleaned = LEADING_LABEL_RE.sub("", ln).strip()
         cleaned = cleaned.replace("豆知識として、", "").replace("豆知識として", "")
         cleaned = cleaned.replace("デザイナーあるあるとして、", "").replace("デザイナーあるあるとして", "")
+        cleaned = _strip_banned_leading_phrases(cleaned)
         lines.append(cleaned)
     body = "\n".join(lines)
+    body = enforce_post_density_rules(body, slot_name=slot_name)
     # Tone normalization: avoid hard "〜だ。", prefer "です。" or concise ending.
     # Keep meaning while softening tone for this account style.
     body = COPULA_DA_RE.sub(r"\1です。", body)
@@ -132,6 +221,11 @@ PDFストック知見（参考）: {json.dumps(ksn[:4], ensure_ascii=False)}
 次の4要素を自然に含めること: 事実 / 示唆 / 予測 / 行動。
 本文は自然文のみ。`事実:` や `示唆:` のようなラベルを書かないこと。
 「デザイナーあるある:」「豆知識:」「基礎:」「応用:」などの見出しラベルは禁止。
+禁止導入語: 「今日は」「今回は」「ここで」「まずは」「〜してみましょう」「〜していきます」。
+文章構造は必ず「結論 → 理由 → 具体的な設計・行動」。
+講義型ではなく洞察型にすること。1文目は説明の前置きではなく、最も言いたい結論を書くこと。
+意味のない接続語や前置きを削り、SNS投稿として密度を高くすること。
+抽象語だけで逃げず、設計・判断・比較・行動のどれかが見える文にすること。
 最新性が必要な内容はニュース/X由来を優先し、PDFは基礎知識・背景の補強に使うこと。
 冷静さの中に、僅かなゆるさ・カジュアルさを入れること。
 語尾は「〜だ。」を避け、「です。」または体言止め（例: 〜が肝心。）をバランスよく使うこと。
@@ -230,6 +324,8 @@ def build_noon_news_post(
 - AIニュースの要点を最初の1-2文で簡潔に要約
 - その後に「これからどう効いてくるか」の予測を1文入れる
 - 最後に、実務者が今日試せる小さな行動を1文入れる
+- 「今日は」「今回は」「ここで」「まずは」「〜してみましょう」「〜していきます」は使わない
+- 1文目は必ず結論
 - URLは本文に含めない
 - 引用投稿前提ではなく、通常投稿として成立させる
 - 冷静で実務的、少しカジュアル

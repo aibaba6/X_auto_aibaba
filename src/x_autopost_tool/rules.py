@@ -17,6 +17,8 @@ EMOJI_RE = re.compile(
     r"\U0001F900-\U0001F9FF"
     r"\U0001FA70-\U0001FAFF]"
 )
+LOW_DENSITY_PHRASES = ["今日は", "今回は", "ここで", "まずは", "してみましょう", "していきます"]
+CONCLUSION_HINT_RE = re.compile(r"(重要|肝|本質|必要|効く|決まる|左右|変わる|設計|改善|順序|比較)")
 
 
 def _contains_any(text: str, words: list[str]) -> bool:
@@ -62,6 +64,13 @@ def validate_post_draft(
     emoji_count = len(EMOJI_RE.findall(text))
     if emoji_count > config.max_emojis:
         reasons.append(f"絵文字過多({emoji_count})")
+
+    sentences = [s.strip() for s in re.split(r"(?<=[。！？])|\n+", HASHTAG_RE.sub("", text)) if s and s.strip()]
+    first_sentence = sentences[0] if sentences else ""
+    if any(phrase in first_sentence for phrase in LOW_DENSITY_PHRASES):
+        reasons.append("不要な導入語を含む")
+    if first_sentence and not CONCLUSION_HINT_RE.search(first_sentence) and "は" not in first_sentence:
+        reasons.append("1文目が結論になっていない")
 
     return len(reasons) == 0, reasons
 
