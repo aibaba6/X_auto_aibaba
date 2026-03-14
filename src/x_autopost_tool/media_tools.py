@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 import base64
-import hashlib
 import json
 from pathlib import Path
 import os
-import random
 import re
 import subprocess
 import time
@@ -44,6 +42,14 @@ STOPWORDS = {
     "サイン",
     "流れ",
 }
+
+TONE_RULES = [
+    ("encouraging", ["大丈夫", "OK", "十分", "一歩", "少しずつ", "続け", "積み上げ"]),
+    ("analytical", ["設計", "構造", "整理", "比較", "改善", "見返", "違和感", "言語化"]),
+    ("practical", ["まず", "手順", "工程", "自動化", "運用", "効率", "レビュー時間"]),
+    ("urgent", ["速報", "今すぐ", "急い", "見逃せ", "大きい変化"]),
+    ("reflective", ["今夜", "振り返", "判断", "記録", "1行", "終わり"]),
+]
 
 
 def _extract_keywords(post_text: str, limit: int = 5) -> list[str]:
@@ -109,6 +115,62 @@ def _pick_focus_sentence(post_text: str) -> str:
         scored.append((score, sentence))
     scored.sort(reverse=True)
     return scored[0][1]
+
+
+def _classify_theme(post_text: str) -> str:
+    text = _normalize_post_text(post_text)
+    if any(token in text for token in ["自動化", "運用", "工程", "効率", "レビュー時間"]):
+        return "workflow improvement with AI"
+    if any(token in text for token in ["設計", "UI", "レイアウト", "制作物", "デザイン"]):
+        return "design review and output quality"
+    if any(token in text for token in ["ニュース", "動向", "予測", "トピック"]):
+        return "AI trend summary and outlook"
+    if any(token in text for token in ["振り返", "判断", "積み上げ", "今夜", "続け"]):
+        return "steady progress and reflection"
+    return "practical creative work with AI"
+
+
+def _classify_tone(post_text: str) -> str:
+    text = _normalize_post_text(post_text)
+    for tone, rules in TONE_RULES:
+        if any(token in text for token in rules):
+            return tone
+    return "calm and thoughtful"
+
+
+def _build_core_message(post_text: str) -> str:
+    focus = _pick_focus_sentence(post_text)
+    action = _pick_action_sentence(post_text)
+    if focus and action and action not in focus:
+        return f"{focus[:120]} / {action[:90]}"
+    if focus:
+        return focus[:150]
+    return "Show one concrete insight and one clear next step."
+
+
+def _select_concept_pattern(post_text: str) -> str:
+    text = _normalize_post_text(post_text)
+    if any(token in text for token in ["比較", "違い", "before", "after", "改善", "見返", "惜しい"]):
+        return "comparison"
+    if any(token in text for token in ["感情", "余白", "空気感", "今夜", "振り返", "続け", "判断"]):
+        return "symbolic"
+    return "direct"
+
+
+def _select_visual_mode(post_text: str, visual_mode: str) -> str:
+    if visual_mode in VISUAL_MODES and visual_mode != "auto":
+        return visual_mode
+    text = _normalize_post_text(post_text)
+    pattern = _select_concept_pattern(text)
+    if any(token in text for token in ["工程", "フロー", "自動化", "比較", "整理", "構造"]):
+        return "diagram"
+    if any(token in text for token in ["設計", "UI", "制作物", "レイアウト", "デザイン"]):
+        return "design_case"
+    if pattern == "symbolic":
+        if any(token in text for token in ["今夜", "振り返", "空気感", "余白"]):
+            return "photo"
+        return "editorial"
+    return "photo"
 
 
 def _pick_action_sentence(post_text: str) -> str:
@@ -195,66 +257,118 @@ def _build_constraint_line(post_text: str) -> str:
 
 
 def _pick_auto_mode(post_text: str) -> str:
-    # Rotate style by hash + current day so repeated topics still vary over time.
-    seed_src = f"{datetime.now().strftime('%Y-%m-%d')}::{post_text[:120]}"
-    seed = int(hashlib.sha256(seed_src.encode("utf-8")).hexdigest()[:8], 16)
-    rng = random.Random(seed)
-    pool = ["design_case", "diagram", "editorial", "photo"]
-    return pool[rng.randrange(0, len(pool))]
+    return _select_visual_mode(post_text, "auto")
 
 
-def build_morning_image_prompt(post_text: str, visual_mode: str = "auto") -> tuple[str, str]:
-    mode = visual_mode if visual_mode in VISUAL_MODES else "auto"
-    if mode == "auto":
-        mode = _pick_auto_mode(post_text)
+def _build_avoid_list(post_text: str, visual_mode: str, concept_pattern: str) -> list[str]:
+    avoid = [
+        "generic futuristic AI imagery, robots, glowing brains, floating holograms",
+        "readable text, logos, watermarks, branded UI, tiny labels",
+        "overcrowded composition with too many elements or unclear focal point",
+    ]
+    text = _normalize_post_text(post_text)
+    if concept_pattern == "comparison":
+        avoid[2] = "vague abstract shapes that hide the contrast or comparison"
+    elif concept_pattern == "symbolic":
+        avoid[2] = "self-indulgent abstract art that looks beautiful but does not convey the message"
+    if visual_mode == "photo":
+        avoid.append("ad-like glossy product staging that feels disconnected from the post meaning")
+    elif visual_mode == "diagram":
+        avoid.append("decorative icons and complex chart details that reduce instant readability")
+    return avoid[:4]
+
+
+def _build_visual_strategy(post_text: str, visual_mode: str, concept_pattern: str) -> str:
+    theme = _classify_theme(post_text)
+    if concept_pattern == "comparison":
+        concept = "comparison expression"
+        objective = "show a clear difference between the weaker state and the improved state in one glance"
+    elif concept_pattern == "symbolic":
+        concept = "symbolic expression"
+        objective = "use one grounded scene or object metaphor with enough realism to communicate instantly"
+    else:
+        concept = "direct expression"
+        objective = "show the core message as a concrete scene, workflow, or object arrangement"
+    style = {
+        "design_case": "modern design-case layout",
+        "diagram": "minimal structured diagram",
+        "editorial": "modern conceptual editorial art direction",
+        "photo": "clean realistic photo direction",
+    }.get(visual_mode, "clear social-media visual")
+    return f"{concept} with {style}; prioritize instant readability for SNS, match the theme '{theme}', and {objective}"
+
+
+def build_nano_banana_prompt_payload(post_text: str, visual_mode: str = "auto") -> dict[str, object]:
     normalized = _normalize_post_text(post_text)
+    mode = _select_visual_mode(normalized, visual_mode)
+    tone = _classify_tone(normalized)
+    theme = _classify_theme(normalized)
+    core_message = _build_core_message(normalized)
+    concept_pattern = _select_concept_pattern(normalized)
+    visual_strategy = _build_visual_strategy(normalized, mode, concept_pattern)
+    avoid = _build_avoid_list(normalized, mode, concept_pattern)
 
     base = (
-        "Create one original visual concept for an X post about practical AI/design work. "
-        "The image must match the specific message of the post, not a generic futuristic AI illustration. "
-        "Prefer a concrete situation, desk scene, workflow artifact, or visual metaphor directly implied by the post. "
-        "Keep the visual simple, polished, and easy to understand at a glance on social media. "
-        "No readable text inside the image. "
-        "No logo, no emblem, no badge, no watermark, no brand names, no signature. "
-        "Avoid robots, glowing brains, random holograms, floating app icons, stock-crypto visuals, and meaningless abstract tech patterns. "
-        "Output a single image."
+        "Create a single image for an SNS post. "
+        "The image must communicate the main idea immediately even without text. "
+        "Prioritize clarity, relevance to the post, strong stopping power in a social feed, and clean composition. "
+        "Choose one clear focal message only. "
+        "Keep the element count low and avoid abstract ambiguity."
     )
-
-    if mode == "design_case":
-        style = (
-            "Visual style: design case snapshot. "
-            "Show UI mock fragments, spacing studies, layout review artifacts, and tangible design decisions. "
-            "Use restrained neutral palette with one accent color. "
-            "Prefer simple blocks, surfaces, and review materials over symbolic marks."
-        )
-    elif mode == "diagram":
-        style = (
-            "Visual style: conceptual diagram. "
-            "Use geometric blocks, arrows, lanes, layers, and hierarchy to explain the exact process or comparison implied by the post. "
-            "Keep it minimal and readable without text-heavy labels. "
-            "Use neutral primitives, not icon-like symbols."
-        )
-    elif mode == "editorial":
-        style = (
-            "Visual style: editorial layout. "
-            "Strong composition, abstract forms, magazine-like negative space, "
-            "balanced rhythm and contrast, grounded in the post's actual subject. "
-            "No monogram-like marks or pseudo logos."
-        )
-    else:
-        style = (
-            "Visual style: realistic photo direction. "
-            "Professional desk/workspace scene or object arrangement that directly represents the post's main point. "
-            "Natural materials, soft shadows, documentary-like realism. "
-            "No signage, no brand marks, no printed logos."
-        )
-
+    style = {
+        "design_case": (
+            "Use a modern design-case direction with UI fragments, layout review artifacts, spacing studies, and restrained color accents."
+        ),
+        "diagram": (
+            "Use a minimal explanatory diagram style with clean hierarchy, before/after contrast or step relationships, and no tiny labels."
+        ),
+        "editorial": (
+            "Use a modern conceptual editorial style with strong focal composition, controlled symbolism, and meaningful negative space."
+        ),
+        "photo": (
+            "Use a realistic photographic direction with believable objects, natural lighting, and a concrete scene tied to the post."
+        ),
+    }.get(mode, "Use a clean, modern, highly legible social-media visual style.")
+    concept = {
+        "direct": "Visual approach: direct expression. Show the message as a concrete scene or workflow artifact.",
+        "comparison": "Visual approach: comparison expression. Make the difference or improvement instantly understandable in one glance.",
+        "symbolic": "Visual approach: symbolic expression. Use one grounded metaphor or everyday scene that still feels immediately readable.",
+    }[concept_pattern]
     subject = _build_subject_line(normalized)
     action = _build_action_line(normalized)
     scene = _build_scene_direction(normalized, mode)
     constraints = _build_constraint_line(normalized)
+    avoid_line = "Avoid: " + "; ".join(avoid) + "."
+    tone_line = f"Emotional tone: {tone}."
+    core_line = f"Core message to visualize: {core_message}."
     context = f"Post context summary: {normalized[:280]}"
-    return f"{base} {style} {subject} {action} {scene} {constraints} {context}", mode
+
+    prompt_en = " ".join([base, style, concept, tone_line, core_line, subject, action, scene, constraints, avoid_line, context])
+    prompt_ja = (
+        f"SNS投稿向けに、主題「{theme}」を一目で伝える1枚画像を作成してください。"
+        f"感情トーンは{tone}。"
+        f"中心メッセージは「{core_message}」。"
+        f"ビジュアル方針は{visual_strategy}。"
+        "文字に頼らず、画像単体で意味が伝わる構図にしてください。"
+        "要素は絞り、視認性を高く保ち、抽象的すぎる表現は避けてください。"
+        f"避ける表現: {'、'.join(avoid)}。"
+    )
+
+    return {
+        "theme": theme,
+        "tone": tone,
+        "core_message": core_message,
+        "visual_strategy": visual_strategy,
+        "avoid": avoid,
+        "nano_banana_prompt_ja": prompt_ja,
+        "nano_banana_prompt_en": prompt_en,
+    }
+
+
+def build_morning_image_prompt(post_text: str, visual_mode: str = "auto") -> tuple[str, str]:
+    payload = build_nano_banana_prompt_payload(post_text, visual_mode=visual_mode)
+    mode = _select_visual_mode(post_text, visual_mode)
+    return str(payload["nano_banana_prompt_en"]), mode
 
 
 def generate_image_with_nanobanana(

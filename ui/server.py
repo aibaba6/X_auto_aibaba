@@ -47,6 +47,7 @@ if str(ROOT) not in sys.path:
 from src.x_autopost_tool.collectors import fetch_rss_items, filter_blocked
 from src.x_autopost_tool.llm import build_post_drafts, normalize_x_post_text
 from src.x_autopost_tool.media_tools import (
+    build_nano_banana_prompt_payload,
     generate_image_with_freepik_mystic,
     generate_image_with_nanobanana,
     generate_image_with_nanobanana_pro_api,
@@ -841,6 +842,21 @@ def api_generate_image():
         return jsonify({"ok": True, "path": output, "url": _safe_media_url(output), "visual_mode": used_mode})
     except Exception as e:
         return jsonify({"ok": False, "message": f"画像生成エラー: {e}"}), 400
+
+
+@app.post("/api/generate_image_prompt")
+def api_generate_image_prompt():
+    if not request.is_json:
+        return jsonify({"ok": False, "message": "JSONで送信してください。"}), 400
+    text = str(request.json.get("text", "")).strip()
+    visual_mode = str(request.json.get("visual_mode", "auto")).strip() or "auto"
+    if not text:
+        return jsonify({"ok": False, "message": "投稿文が空です。"}), 400
+    try:
+        payload = build_nano_banana_prompt_payload(text, visual_mode=visual_mode)
+        return jsonify({"ok": True, **payload})
+    except Exception as e:
+        return jsonify({"ok": False, "message": f"画像プロンプト解析エラー: {e}"}), 400
 
 
 @app.get("/api/media/<path:relpath>")
