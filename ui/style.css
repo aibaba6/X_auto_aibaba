@@ -23,6 +23,28 @@ body {
   color: var(--ink);
 }
 
+.action-bubble {
+  position: fixed;
+  z-index: 60;
+  transform: translate(-50%, 6px);
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #111;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  opacity: 0;
+  pointer-events: none;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+  transition: opacity 0.22s ease, transform 0.3s ease;
+}
+
+.action-bubble.show {
+  opacity: 1;
+  transform: translate(-50%, -8px);
+}
+
 .shell {
   width: min(98vw, 1920px);
   max-width: none;
@@ -1004,6 +1026,98 @@ textarea:focus-visible {
 
 .queue-editor input[type="datetime-local"] {
   min-width: 190px;
+}
+
+.plan-media-cell {
+  min-width: 320px;
+}
+
+.plan-media-status {
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #555;
+}
+
+.plan-media-preview {
+  display: block;
+  width: 100%;
+  max-width: 180px;
+  max-height: 120px;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: #d9d9d9;
+  margin-bottom: 10px;
+}
+
+.plan-media-zoomable {
+  cursor: zoom-in;
+}
+
+.plan-media-empty {
+  color: #888;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.plan-media-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.plan-media-progress {
+  margin-bottom: 10px;
+}
+
+.image-modal {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+
+.image-modal.show {
+  display: flex;
+}
+
+.image-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(17, 17, 17, 0.76);
+}
+
+.image-modal-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(88vw, 920px);
+  max-height: 88vh;
+  padding: 20px 20px 28px;
+  border-radius: 24px;
+  background: #efefef;
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.28);
+}
+
+.image-modal-dialog img {
+  width: 100%;
+  max-height: 72vh;
+  object-fit: contain;
+  border-radius: 16px;
+  background: #ddd;
+  border: 1px solid var(--line);
+}
+
+.image-modal-close {
+  min-width: 64px;
+  font-size: 28px;
+  line-height: 1;
+  padding: 10px 22px;
 }
 
 .queue-media-cell {

@@ -74,6 +74,9 @@ const railHint = document.getElementById("railHint");
 const generateImageBtn = document.getElementById("generateImageBtn");
 const deleteSelectedQueueBtn = document.getElementById("deleteSelectedQueueBtn");
 const clearQueueBtn = document.getElementById("clearQueueBtn");
+const imageModal = document.getElementById("imageModal");
+const imageModalPreview = document.getElementById("imageModalPreview");
+const imageModalCloseBtn = document.getElementById("imageModalCloseBtn");
 
 let currentPlan = [];
 let currentQueue = [];
@@ -81,6 +84,22 @@ let generatedMediaPath = "";
 let currentPage = "dashboard";
 let imageCooldownTimer = null;
 let planGenerationNonce = 0;
+
+function showButtonSuccess(button, text = "Success!") {
+  if (!(button instanceof HTMLElement)) return;
+  const rect = button.getBoundingClientRect();
+  const bubble = document.createElement("div");
+  bubble.className = "action-bubble";
+  bubble.textContent = text;
+  bubble.style.left = `${rect.left + rect.width / 2}px`;
+  bubble.style.top = `${Math.max(12, rect.top - 10)}px`;
+  document.body.appendChild(bubble);
+  requestAnimationFrame(() => bubble.classList.add("show"));
+  window.setTimeout(() => {
+    bubble.classList.remove("show");
+    window.setTimeout(() => bubble.remove(), 260);
+  }, 1150);
+}
 
 function slotLabel(slot) {
   if (slot === "morning") return "朝";
@@ -131,6 +150,32 @@ function startProgress(task, wrapEl, barEl, textEl, fallbackMs) {
       textEl.textContent = ok
         ? `完了 100%（${Math.ceil(elapsed / 1000)}秒）`
         : `失敗 ${Math.min(99, Math.round((elapsed / expectedMs) * 100))}%（${Math.ceil(elapsed / 1000)}秒）`;
+    },
+  };
+}
+
+function startInlineProgress(task, wrapEl, barEl, textEl, fallbackMs) {
+  const expectedMs = getExpectedMs(task, fallbackMs);
+  wrapEl.classList.add("show");
+  const startedAt = Date.now();
+  barEl.style.width = "2%";
+  textEl.textContent = `生成中 0%（残り約${formatRemain(expectedMs)}）`;
+
+  const timer = setInterval(() => {
+    const elapsed = Date.now() - startedAt;
+    const ratio = Math.min(0.94, elapsed / expectedMs);
+    const pct = Math.max(1, Math.min(94, Math.round(ratio * 100)));
+    barEl.style.width = `${pct}%`;
+    textEl.textContent = `生成中 ${pct}%（残り約${formatRemain(Math.max(0, expectedMs - elapsed))})`;
+  }, 180);
+
+  return {
+    done(ok = true) {
+      clearInterval(timer);
+      const elapsed = Date.now() - startedAt;
+      saveObservedMs(task, elapsed);
+      barEl.style.width = "100%";
+      textEl.textContent = ok ? `生成完了 100%（${Math.ceil(elapsed / 1000)}秒）` : `生成失敗`;
     },
   };
 }
@@ -236,14 +281,30 @@ function normalizePlanItem(item) {
     media_url: item.media_url || "",
     media_name: item.media_name || "",
     media_approved: !!item.media_approved,
+    media_generating: !!item.media_generating,
   };
 }
 
 function planMediaStatusLabel(row) {
   if (!canPlanGenerateImage(row.slot)) return "対象外";
+  if (row.media_generating) return "生成中";
   if (row.media_approved && row.media_path) return "添付予定";
   if (row.media_path) return "生成済み";
   return "未生成";
+}
+
+function openImageModal(src) {
+  if (!imageModal || !imageModalPreview || !src) return;
+  imageModalPreview.src = src;
+  imageModal.classList.add("show");
+  imageModal.setAttribute("aria-hidden", "false");
+}
+
+function closeImageModal() {
+  if (!imageModal || !imageModalPreview) return;
+  imageModal.classList.remove("show");
+  imageModal.setAttribute("aria-hidden", "true");
+  imageModalPreview.src = "";
 }
 
 function setAccountStatusConnected({ username, name, followers: f, tweet_count: t }) {
@@ -262,6 +323,7 @@ async function checkAccount() {
   try {
     const data = await fetchJson("/api/account");
     setAccountStatusConnected(data);
+    showButtonSuccess(document.getElementById("checkAccountBtn"));
   } catch (e) {
     accountChip.textContent = "エラー";
     accountMessage.textContent = `X連動エラー: ${e}`;
@@ -278,6 +340,10 @@ async function runDry(slot) {
       body: JSON.stringify({ slot }),
     });
     runOutput.textContent = data.output || data.message || "出力はありません。";
+    const button =
+      document.querySelector(`.slot-run[data-slot="${slot}"]`) ||
+      (selectedSlot === slot ? document.getElementById("runSelectedBtn") : null);
+    showButtonSuccess(button);
   } catch (e) {
     runOutput.textContent = `実行エラー: ${e}`;
   }
@@ -323,6 +389,7 @@ async function testPost() {
     }
     runOutput.textContent = `${data.message}\n投稿ID: ${data.tweet_id}\n${data.tweet_url || ""}`;
     if (fileInput) fileInput.value = "";
+    showButtonSuccess(document.getElementById("testPostBtn"));
   } catch (e) {
     runOutput.textContent = `試験投稿エラー: ${e}`;
   }
@@ -347,6 +414,7 @@ async function generateDraft() {
     const reason = (data.reason || "").trim();
     draftLabMessage.textContent = reason ? `生成OK: ${reason}` : "投稿文を生成しました。";
     p.done(true);
+    showButtonSuccess(document.getElementById("generateDraftBtn"));
   } catch (e) {
     draftLabMessage.textContent = `生成エラー: ${e}`;
     p.done(false);
@@ -401,6 +469,7 @@ async function generateImageFromDraft() {
     generatedMediaPreview.classList.add("show");
     generatedMediaMessage.textContent = `画像を生成しました（モード: ${usedMode}）。必要なら試験投稿へ添付できます。`;
     p.done(true);
+    showButtonSuccess(document.getElementById("generateImageBtn"));
   } catch (e) {
     generatedMediaPath = "";
     const retrySec = Number(e?.payload?.retry_after_sec || 0);
@@ -440,6 +509,7 @@ async function saveTargetAccount() {
     targetAccountMessage.textContent = data.message || "保存しました。";
     targetAccountInput.value = data.account_handle;
     setXIdentity(data.account_handle);
+    showButtonSuccess(document.getElementById("saveTargetBtn"));
   } catch (e) {
     targetAccountMessage.textContent = `保存エラー: ${e}`;
   }
@@ -468,6 +538,7 @@ async function verifyTargetAccount() {
       tweet_count: data.tweet_count ?? "-",
     });
     setXIdentity(`@${data.username}`, data.name);
+    showButtonSuccess(document.getElementById("verifyTargetBtn"));
   } catch (e) {
     targetAccountMessage.textContent = `確認エラー: ${e}`;
   }
@@ -513,6 +584,7 @@ async function saveEnv() {
       document.getElementById(key).value = "";
     });
     await loadEnvStatus();
+    showButtonSuccess(document.getElementById("saveEnvBtn"));
   } catch (e) {
     envMessage.textContent = `保存エラー: ${e}`;
   }
@@ -549,6 +621,7 @@ async function saveMediaConfig() {
       body: JSON.stringify({ media }),
     });
     mediaMessage.textContent = data.message || "メディア設定を保存しました。";
+    showButtonSuccess(document.getElementById("saveMediaBtn"));
   } catch (e) {
     mediaMessage.textContent = `メディア設定保存エラー: ${e}`;
   }
@@ -622,6 +695,7 @@ async function uploadPdf() {
     renderPdfLibrary(data.docs || []);
     pdfMessage.textContent = data.message || "PDFを追加しました。";
     pdfUploadInput.value = "";
+    showButtonSuccess(document.getElementById("uploadPdfBtn"));
   } catch (e) {
     pdfMessage.textContent = `PDF追加エラー: ${e}`;
   }
@@ -635,6 +709,7 @@ async function deletePdf(docId) {
     const data = await fetchJson(`/api/pdf_library/${encodeURIComponent(docId)}`, { method: "DELETE" });
     renderPdfLibrary(data.docs || []);
     pdfMessage.textContent = data.message || "PDFを削除しました。";
+    showButtonSuccess(document.activeElement);
   } catch (e) {
     pdfMessage.textContent = `PDF削除エラー: ${e}`;
   }
@@ -655,6 +730,7 @@ async function updatePdfSettings(docId, priority, scope) {
     });
     renderPdfLibrary(data.docs || []);
     pdfMessage.textContent = data.message || "PDF設定を更新しました。";
+    showButtonSuccess(document.activeElement);
   } catch (e) {
     pdfMessage.textContent = `PDF設定更新エラー: ${e}`;
   }
@@ -682,9 +758,15 @@ function renderPlanRows(items) {
           <div class="plan-media-status">${esc(planMediaStatusLabel(row))}</div>
           ${
             row.media_url
-              ? `<img class="plan-media-preview" src="${esc(row.media_url)}" alt="plan generated media" />`
+              ? `<img class="plan-media-preview plan-media-zoomable" src="${esc(row.media_url)}" alt="plan generated media" />`
               : `<div class="plan-media-empty">${canPlanGenerateImage(row.slot) ? "画像なし" : "昼枠は画像なし"}</div>`
           }
+          <div class="op-progress plan-media-progress${row.media_generating ? " show" : ""}">
+            <div class="op-progress-bar">
+              <i style="width:${row.media_generating ? "2%" : "0%"}"></i>
+            </div>
+            <p>${row.media_generating ? "生成中 0%" : "待機中"}</p>
+          </div>
           ${
             canPlanGenerateImage(row.slot)
               ? `
@@ -774,12 +856,28 @@ function applyPlanToQueue() {
   }));
   renderQueueRows(currentQueue);
   queueMessage.textContent = `${currentQueue.length}件を投稿キューに反映しました。`;
+  showButtonSuccess(document.getElementById("applyPlanToQueueBtn"));
 }
 
 async function generatePlanImage(idx) {
   const row = currentPlan[idx];
   if (!row || !canPlanGenerateImage(row.slot)) return;
+  const tr = planTbody.querySelector(`tr[data-plan-idx="${idx}"]`);
+  const progressWrap = tr?.querySelector(".plan-media-progress");
+  const progressBar = progressWrap?.querySelector("i");
+  const progressText = progressWrap?.querySelector("p");
+  const generateBtn = tr?.querySelector(".plan-generate-image");
+  const approveBtn = tr?.querySelector(".plan-approve-image");
+  const clearBtn = tr?.querySelector(".plan-clear-image");
+  currentPlan[idx] = normalizePlanItem({ ...row, media_generating: true });
   planMessage.textContent = `${slotLabel(row.slot)}枠の画像を生成中...`;
+  if (generateBtn) generateBtn.setAttribute("disabled", "disabled");
+  if (approveBtn) approveBtn.setAttribute("disabled", "disabled");
+  if (clearBtn) clearBtn.setAttribute("disabled", "disabled");
+  const progress =
+    progressWrap && progressBar && progressText
+      ? startInlineProgress("plan_image", progressWrap, progressBar, progressText, 18000)
+      : null;
   try {
     const data = await fetchJson("/api/generate_image", {
       method: "POST",
@@ -792,10 +890,16 @@ async function generatePlanImage(idx) {
       media_url: data.url || "",
       media_name: (data.path || "").split("/").pop() || "generated.png",
       media_approved: false,
+      media_generating: false,
     });
+    progress?.done(true);
     renderPlanRows(currentPlan);
     planMessage.textContent = `${slotLabel(row.slot)}枠の画像を生成しました。問題なければ「OKで添付」を押してください。`;
+    showButtonSuccess(generateBtn);
   } catch (e) {
+    currentPlan[idx] = normalizePlanItem({ ...row, media_generating: false });
+    progress?.done(false);
+    renderPlanRows(currentPlan);
     planMessage.textContent = `画像生成エラー: ${e}`;
   }
 }
@@ -806,6 +910,8 @@ function approvePlanImage(idx) {
   currentPlan[idx] = normalizePlanItem({ ...row, media_approved: true });
   renderPlanRows(currentPlan);
   planMessage.textContent = `${slotLabel(row.slot)}枠の画像を添付予定にしました。`;
+  const btn = planTbody.querySelector(`tr[data-plan-idx="${idx}"] .plan-approve-image`);
+  showButtonSuccess(btn);
 }
 
 function clearPlanImage(idx) {
@@ -817,9 +923,12 @@ function clearPlanImage(idx) {
     media_url: "",
     media_name: "",
     media_approved: false,
+    media_generating: false,
   });
   renderPlanRows(currentPlan);
   planMessage.textContent = `${slotLabel(row.slot)}枠の画像を解除しました。`;
+  const btn = planTbody.querySelector(`tr[data-plan-idx="${idx}"] .plan-clear-image`);
+  showButtonSuccess(btn);
 }
 
 function collectQueueFromTable() {
@@ -904,6 +1013,7 @@ async function buildPlan() {
     currentPlan = (data.plan || []).map(normalizePlanItem);
     renderPlanRows(currentPlan);
     p.done(true);
+    showButtonSuccess(document.getElementById("buildPlanBtn"));
   } catch (e) {
     planMessage.textContent = `計画作成エラー: ${e}`;
     p.done(false);
@@ -922,6 +1032,7 @@ async function saveQueue() {
     currentQueue = data.queue || queue;
     renderQueueRows(currentQueue);
     queueMessage.textContent = data.message || "キューを保存しました。";
+    showButtonSuccess(document.getElementById("saveQueueBtn"));
   } catch (e) {
     queueMessage.textContent = `キュー保存エラー: ${e}`;
   }
@@ -942,6 +1053,7 @@ async function loadQueue() {
     });
     renderQueueRows(currentQueue);
     queueMessage.textContent = `${currentQueue.length}件のキューを読み込みました。`;
+    showButtonSuccess(document.getElementById("loadQueueBtn"));
   } catch (e) {
     queueMessage.textContent = `キュー読込エラー: ${e}`;
   }
@@ -960,12 +1072,14 @@ function deleteSelectedQueueRows() {
   currentQueue = currentQueue.filter((_, idx) => !selectedIdx.includes(idx));
   renderQueueRows(currentQueue);
   queueMessage.textContent = `${selectedIdx.length}件をキューから外しました。保存すると反映されます。`;
+  showButtonSuccess(deleteSelectedQueueBtn);
 }
 
 function clearQueueRows() {
   currentQueue = [];
   renderQueueRows(currentQueue);
   queueMessage.textContent = "キューを空にしました。保存すると反映されます。";
+  showButtonSuccess(clearQueueBtn);
 }
 
 async function uploadQueueMedia(idx, file) {
@@ -987,6 +1101,8 @@ async function uploadQueueMedia(idx, file) {
     };
     renderQueueRows(currentQueue);
     queueMessage.textContent = data.message || "画像を添付しました。保存すると反映されます。";
+    const btn = queueTbody.querySelector(`tr[data-idx="${idx}"] .queue-media-upload`);
+    showButtonSuccess(btn);
   } catch (e) {
     queueMessage.textContent = `画像添付エラー: ${e}`;
   }
@@ -1002,6 +1118,8 @@ function clearQueueMedia(idx) {
   };
   renderQueueRows(currentQueue);
   queueMessage.textContent = "添付画像を解除しました。保存すると反映されます。";
+  const btn = queueTbody.querySelector(`tr[data-idx="${idx}"] .queue-media-clear`);
+  showButtonSuccess(btn);
 }
 
 cards.forEach((card) => {
@@ -1069,6 +1187,10 @@ clearQueueBtn?.addEventListener("click", clearQueueRows);
 planTbody.addEventListener("click", async (ev) => {
   const target = ev.target;
   if (!(target instanceof HTMLElement)) return;
+  if (target.classList.contains("plan-media-zoomable")) {
+    openImageModal(target.getAttribute("src") || "");
+    return;
+  }
   const tr = target.closest("tr[data-plan-idx]");
   if (!tr) return;
   const idx = Number(tr.dataset.planIdx);
@@ -1085,6 +1207,9 @@ planTbody.addEventListener("click", async (ev) => {
     clearPlanImage(idx);
   }
 });
+
+imageModalCloseBtn?.addEventListener("click", closeImageModal);
+imageModal?.querySelector(".image-modal-backdrop")?.addEventListener("click", closeImageModal);
 
 document.querySelectorAll(".slot-run").forEach((btn) => {
   btn.addEventListener("click", () => runDry(btn.dataset.slot));
