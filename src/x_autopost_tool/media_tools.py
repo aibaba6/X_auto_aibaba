@@ -22,6 +22,29 @@ VISUAL_MODES = {
     "photo": "Photo-based realistic scene with clean composition.",
 }
 
+STOPWORDS = {
+    "です",
+    "ます",
+    "する",
+    "した",
+    "して",
+    "いる",
+    "ある",
+    "こと",
+    "もの",
+    "ため",
+    "よう",
+    "今日",
+    "今後",
+    "まず",
+    "直近",
+    "だけ",
+    "十分",
+    "感じる",
+    "サイン",
+    "流れ",
+}
+
 
 def _extract_keywords(post_text: str, limit: int = 5) -> list[str]:
     # Simple keyword extraction for Japanese/ASCII mixed text.
@@ -41,6 +64,136 @@ def _extract_keywords(post_text: str, limit: int = 5) -> list[str]:
     return uniq
 
 
+def _normalize_post_text(post_text: str) -> str:
+    text = re.sub(r"https?://\S+", "", post_text or "")
+    text = re.sub(r"#[^\s]+", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _extract_sentences(post_text: str, limit: int = 3) -> list[str]:
+    text = _normalize_post_text(post_text)
+    parts = re.split(r"[。\n!?！？]+", text)
+    out = []
+    for part in parts:
+        sentence = part.strip(" ・-")
+        if len(sentence) < 6:
+            continue
+        out.append(sentence)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _guess_slot(post_text: str) -> str:
+    text = post_text or ""
+    if any(token in text for token in ["今夜", "夕方", "仕事終わり", "一日", "振り返", "終わり"]):
+        return "evening"
+    if any(token in text for token in ["今日のAI", "ニュース", "速報", "動向", "トピック"]):
+        return "noon"
+    return "morning"
+
+
+def _pick_focus_sentence(post_text: str) -> str:
+    sentences = _extract_sentences(post_text, limit=4)
+    if not sentences:
+        return _normalize_post_text(post_text)[:120]
+    scored = []
+    for sentence in sentences:
+        score = 0
+        if any(token in sentence for token in ["設計", "改善", "運用", "自動化", "判断", "制作", "見返", "振り返"]):
+            score += 3
+        if any(token in sentence for token in ["まずは", "してみて", "残して", "見たい", "見返し"]):
+            score += 2
+        score += min(len(sentence), 80) / 40
+        scored.append((score, sentence))
+    scored.sort(reverse=True)
+    return scored[0][1]
+
+
+def _pick_action_sentence(post_text: str) -> str:
+    sentences = _extract_sentences(post_text, limit=5)
+    for sentence in sentences:
+        if any(token in sentence for token in ["まず", "してみて", "残して", "見返し", "言語化", "試して", "自動化"]):
+            return sentence
+    return sentences[-1] if sentences else ""
+
+
+def _build_subject_line(post_text: str) -> str:
+    focus = _pick_focus_sentence(post_text)
+    if not focus:
+        return "A calm visual about improving creative work with AI."
+    return (
+        "Main message: "
+        + focus[:160]
+        + ". Show the concrete situation behind this idea rather than an abstract generic AI image."
+    )
+
+
+def _build_action_line(post_text: str) -> str:
+    action = _pick_action_sentence(post_text)
+    if not action:
+        return "Suggested action: show one small next step that feels practical and realistic."
+    return "Suggested action in the image concept: " + action[:160]
+
+
+def _build_scene_direction(post_text: str, visual_mode: str) -> str:
+    text = _normalize_post_text(post_text)
+    slot = _guess_slot(text)
+    scene_bits: list[str] = []
+
+    if any(token in text for token in ["設計", "UI", "レイアウト", "制作物", "アウトプット", "デザイン"]):
+        scene_bits.append(
+            "Scene idea: a designer's workspace with wireframes, UI cards, layout blocks, notes, and a visible review process."
+        )
+    if any(token in text for token in ["自動化", "運用", "工程", "フロー", "効率", "レビュー時間"]):
+        scene_bits.append(
+            "Scene idea: a workflow board or process map showing one manual step becoming streamlined and easier to review."
+        )
+    if any(token in text for token in ["振り返", "判断", "積み上げ", "続け", "今夜", "1行", "記録"]):
+        scene_bits.append(
+            "Scene idea: an evening desk with a notebook, one short written reflection, warm light, and a calm sense of progress."
+        )
+    if any(token in text for token in ["ニュース", "動向", "予測", "トピック", "今日のAI"]):
+        scene_bits.append(
+            "Scene idea: a concise editorial summary board with layered information cards and a future-looking perspective."
+        )
+
+    if not scene_bits:
+        if slot == "evening":
+            scene_bits.append("Scene idea: a quiet evening work desk with one completed task and one note for tomorrow.")
+        elif slot == "noon":
+            scene_bits.append("Scene idea: a clean editorial information board that summarizes one current AI shift.")
+        else:
+            scene_bits.append("Scene idea: a bright morning desk scene focused on reviewing and improving work.")
+
+    if visual_mode == "diagram":
+        scene_bits.append(
+            "Translate the scene into a structured diagram with blocks, flow, grouping, and clear visual hierarchy."
+        )
+    elif visual_mode == "design_case":
+        scene_bits.append(
+            "Translate the scene into UI fragments, composition studies, review notes, and before/after layout comparisons."
+        )
+    elif visual_mode == "editorial":
+        scene_bits.append(
+            "Translate the scene into an editorial composition with a strong focal area and expressive negative space."
+        )
+    elif visual_mode == "photo":
+        scene_bits.append(
+            "Translate the scene into a realistic physical environment with believable materials, lighting, and objects."
+        )
+
+    return " ".join(scene_bits[:3])
+
+
+def _build_constraint_line(post_text: str) -> str:
+    keywords = [kw for kw in _extract_keywords(post_text, limit=8) if kw not in STOPWORDS]
+    if not keywords:
+        return "Important motifs: design review, improvement, process clarity, calm focus."
+    return "Important motifs to preserve: " + ", ".join(keywords[:6]) + "."
+
+
 def _pick_auto_mode(post_text: str) -> str:
     # Rotate style by hash + current day so repeated topics still vary over time.
     seed_src = f"{datetime.now().strftime('%Y-%m-%d')}::{post_text[:120]}"
@@ -54,31 +207,30 @@ def build_morning_image_prompt(post_text: str, visual_mode: str = "auto") -> tup
     mode = visual_mode if visual_mode in VISUAL_MODES else "auto"
     if mode == "auto":
         mode = _pick_auto_mode(post_text)
-
-    keywords = _extract_keywords(post_text, limit=5)
-    keyword_line = ", ".join(keywords) if keywords else "design, UI, clarity"
+    normalized = _normalize_post_text(post_text)
 
     base = (
-        "Create one original visual concept for an X post about AI/design practice. "
-        "Keep the visual minimal and clean, with low element count and clear whitespace. "
-        "Do not render readable text. "
-        "No logo, no emblem, no badge, no icon mark, no watermark, no brand names, no signature. "
-        "Avoid unexplained symbols or decorative marks that add noise. "
-        "High quality composition, clear focal point, natural lighting, modern art direction. "
+        "Create one original visual concept for an X post about practical AI/design work. "
+        "The image must match the specific message of the post, not a generic futuristic AI illustration. "
+        "Prefer a concrete situation, desk scene, workflow artifact, or visual metaphor directly implied by the post. "
+        "Keep the visual simple, polished, and easy to understand at a glance on social media. "
+        "No readable text inside the image. "
+        "No logo, no emblem, no badge, no watermark, no brand names, no signature. "
+        "Avoid robots, glowing brains, random holograms, floating app icons, stock-crypto visuals, and meaningless abstract tech patterns. "
         "Output a single image."
     )
 
     if mode == "design_case":
         style = (
             "Visual style: design case snapshot. "
-            "Show UI mock fragments, spacing guides, and before/after contrast blocks. "
+            "Show UI mock fragments, spacing studies, layout review artifacts, and tangible design decisions. "
             "Use restrained neutral palette with one accent color. "
-            "Prefer simple blocks and spacing over symbolic marks."
+            "Prefer simple blocks, surfaces, and review materials over symbolic marks."
         )
     elif mode == "diagram":
         style = (
             "Visual style: conceptual diagram. "
-            "Use geometric blocks, arrows, layers, and hierarchy to explain relationships. "
+            "Use geometric blocks, arrows, lanes, layers, and hierarchy to explain the exact process or comparison implied by the post. "
             "Keep it minimal and readable without text-heavy labels. "
             "Use neutral primitives, not icon-like symbols."
         )
@@ -86,22 +238,23 @@ def build_morning_image_prompt(post_text: str, visual_mode: str = "auto") -> tup
         style = (
             "Visual style: editorial layout. "
             "Strong composition, abstract forms, magazine-like negative space, "
-            "balanced rhythm and contrast. "
+            "balanced rhythm and contrast, grounded in the post's actual subject. "
             "No monogram-like marks or pseudo logos."
         )
     else:
         style = (
             "Visual style: realistic photo direction. "
-            "Professional desk/workspace scene or product-like close-up that symbolizes the topic. "
-            "Natural material, soft shadows, documentary-like realism. "
+            "Professional desk/workspace scene or object arrangement that directly represents the post's main point. "
+            "Natural materials, soft shadows, documentary-like realism. "
             "No signage, no brand marks, no printed logos."
         )
 
-    context = (
-        f"Topic keywords: {keyword_line}. "
-        f"Post context summary: {post_text[:280]}"
-    )
-    return f"{base} {style} {context}", mode
+    subject = _build_subject_line(normalized)
+    action = _build_action_line(normalized)
+    scene = _build_scene_direction(normalized, mode)
+    constraints = _build_constraint_line(normalized)
+    context = f"Post context summary: {normalized[:280]}"
+    return f"{base} {style} {subject} {action} {scene} {constraints} {context}", mode
 
 
 def generate_image_with_nanobanana(

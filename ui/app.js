@@ -316,45 +316,20 @@ function getModalImageSrc(img) {
   return img.currentSrc || img.getAttribute("src") || "";
 }
 
-function openImageInWindow(src) {
-  if (!src) return;
-  const nextWindow = window.open("", "_blank", "noopener,noreferrer");
-  if (!nextWindow) {
-    window.open(src, "_blank", "noopener,noreferrer");
-    return;
-  }
-  const safeSrc = JSON.stringify(src);
-  nextWindow.document.write(`<!doctype html>
-<html lang="ja">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>画像プレビュー</title>
-    <style>
-      :root { color-scheme: light; }
-      body {
-        margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
-        background: #101010;
-        font-family: "Hiragino Sans", "Yu Gothic", sans-serif;
-      }
-      img {
-        max-width: 96vw;
-        max-height: 94vh;
-        object-fit: contain;
-        border-radius: 18px;
-        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
-        background: #202020;
-      }
-    </style>
-  </head>
-  <body>
-    <img src=${safeSrc} alt="preview" />
-  </body>
-</html>`);
-  nextWindow.document.close();
+function openImageModal(src) {
+  if (!src || !imageModal || !imageModalPreview) return;
+  imageModalPreview.src = src;
+  imageModal.classList.add("show");
+  imageModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+}
+
+function closeImageModal() {
+  if (!imageModal || !imageModalPreview) return;
+  imageModal.classList.remove("show");
+  imageModal.setAttribute("aria-hidden", "true");
+  imageModalPreview.src = "";
+  document.body.classList.remove("modal-open");
 }
 
 function setAccountStatusConnected({ username, name, followers: f, tweet_count: t }) {
@@ -1242,7 +1217,7 @@ planTbody.addEventListener("click", async (ev) => {
   if (!(target instanceof HTMLElement)) return;
   const zoomImage = target.closest(".plan-media-zoomable");
   if (zoomImage instanceof HTMLImageElement) {
-    openImageInWindow(getModalImageSrc(zoomImage));
+    openImageModal(getModalImageSrc(zoomImage));
     return;
   }
   const tr = target.closest("tr[data-plan-idx]");
@@ -1264,7 +1239,18 @@ planTbody.addEventListener("click", async (ev) => {
 
 generatedMediaPreview?.addEventListener("click", () => {
   if (!generatedMediaPreview.classList.contains("show")) return;
-  openImageInWindow(getModalImageSrc(generatedMediaPreview));
+  openImageModal(getModalImageSrc(generatedMediaPreview));
+});
+
+imageModalCloseBtn?.addEventListener("click", closeImageModal);
+imageModal?.querySelector(".image-modal-backdrop")?.addEventListener("click", closeImageModal);
+imageModal?.addEventListener("click", (ev) => {
+  if (ev.target === imageModal) closeImageModal();
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && imageModal?.classList.contains("show")) {
+    closeImageModal();
+  }
 });
 
 planTbody.addEventListener("change", (ev) => {

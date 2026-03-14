@@ -1072,6 +1072,10 @@ textarea:focus-visible {
   margin-bottom: 10px;
 }
 
+body.modal-open {
+  overflow: hidden;
+}
+
 .image-modal {
   position: fixed;
   inset: 0;
