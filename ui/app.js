@@ -84,6 +84,13 @@ let generatedMediaPath = "";
 let currentPage = "dashboard";
 let imageCooldownTimer = null;
 let planGenerationNonce = 0;
+const PLAN_VISUAL_MODE_OPTIONS = [
+  ["auto", "自動ローテーション"],
+  ["design_case", "デザイン事例"],
+  ["diagram", "図解/概念図"],
+  ["editorial", "エディトリアル"],
+  ["photo", "写真ベース"],
+];
 
 function showButtonSuccess(button, text = "Success!") {
   if (!(button instanceof HTMLElement)) return;
@@ -274,12 +281,23 @@ function canPlanGenerateImage(slot) {
   return slot === "morning" || slot === "evening";
 }
 
+function getDefaultVisualMode() {
+  return (document.getElementById("visualModeSelect")?.value || "auto").trim() || "auto";
+}
+
+function buildVisualModeOptions(selected) {
+  return PLAN_VISUAL_MODE_OPTIONS.map(
+    ([value, label]) => `<option value="${esc(value)}"${value === selected ? " selected" : ""}>${esc(label)}</option>`,
+  ).join("");
+}
+
 function normalizePlanItem(item) {
   return {
     ...item,
     media_path: item.media_path || "",
     media_url: item.media_url || "",
     media_name: item.media_name || "",
+    media_visual_mode: item.media_visual_mode || getDefaultVisualMode(),
     media_approved: !!item.media_approved,
     media_generating: !!item.media_generating,
   };
@@ -298,18 +316,45 @@ function getModalImageSrc(img) {
   return img.currentSrc || img.getAttribute("src") || "";
 }
 
-function openImageModal(src) {
-  if (!imageModal || !imageModalPreview || !src) return;
-  imageModalPreview.src = src;
-  imageModal.classList.add("show");
-  imageModal.setAttribute("aria-hidden", "false");
-}
-
-function closeImageModal() {
-  if (!imageModal || !imageModalPreview) return;
-  imageModal.classList.remove("show");
-  imageModal.setAttribute("aria-hidden", "true");
-  imageModalPreview.src = "";
+function openImageInWindow(src) {
+  if (!src) return;
+  const nextWindow = window.open("", "_blank", "noopener,noreferrer");
+  if (!nextWindow) {
+    window.open(src, "_blank", "noopener,noreferrer");
+    return;
+  }
+  const safeSrc = JSON.stringify(src);
+  nextWindow.document.write(`<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>画像プレビュー</title>
+    <style>
+      :root { color-scheme: light; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #101010;
+        font-family: "Hiragino Sans", "Yu Gothic", sans-serif;
+      }
+      img {
+        max-width: 96vw;
+        max-height: 94vh;
+        object-fit: contain;
+        border-radius: 18px;
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+        background: #202020;
+      }
+    </style>
+  </head>
+  <body>
+    <img src=${safeSrc} alt="preview" />
+  </body>
+</html>`);
+  nextWindow.document.close();
 }
 
 function setAccountStatusConnected({ username, name, followers: f, tweet_count: t }) {
@@ -776,6 +821,9 @@ function renderPlanRows(items) {
             canPlanGenerateImage(row.slot)
               ? `
             <div class="plan-media-actions">
+              <select class="visual-mode-select plan-visual-mode">
+                ${buildVisualModeOptions(row.media_visual_mode || "auto")}
+              </select>
               <button type="button" class="ghost mini plan-generate-image">${
                 row.media_path ? "やり直し" : "Nano Banana Proで生成"
               }</button>
@@ -887,7 +935,7 @@ async function generatePlanImage(idx) {
     const data = await fetchJson("/api/generate_image", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: row.text, visual_mode: "auto" }),
+      body: JSON.stringify({ text: row.text, visual_mode: row.media_visual_mode || getDefaultVisualMode() }),
     });
     currentPlan[idx] = normalizePlanItem({
       ...row,
@@ -1194,7 +1242,7 @@ planTbody.addEventListener("click", async (ev) => {
   if (!(target instanceof HTMLElement)) return;
   const zoomImage = target.closest(".plan-media-zoomable");
   if (zoomImage instanceof HTMLImageElement) {
-    openImageModal(getModalImageSrc(zoomImage));
+    openImageInWindow(getModalImageSrc(zoomImage));
     return;
   }
   const tr = target.closest("tr[data-plan-idx]");
@@ -1216,15 +1264,19 @@ planTbody.addEventListener("click", async (ev) => {
 
 generatedMediaPreview?.addEventListener("click", () => {
   if (!generatedMediaPreview.classList.contains("show")) return;
-  openImageModal(getModalImageSrc(generatedMediaPreview));
+  openImageInWindow(getModalImageSrc(generatedMediaPreview));
 });
 
-imageModalCloseBtn?.addEventListener("click", closeImageModal);
-imageModal?.querySelector(".image-modal-backdrop")?.addEventListener("click", closeImageModal);
-document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape" && imageModal?.classList.contains("show")) {
-    closeImageModal();
-  }
+planTbody.addEventListener("change", (ev) => {
+  const target = ev.target;
+  if (!(target instanceof HTMLSelectElement) || !target.classList.contains("plan-visual-mode")) return;
+  const tr = target.closest("tr[data-plan-idx]");
+  if (!tr) return;
+  const idx = Number(tr.dataset.planIdx);
+  const row = currentPlan[idx];
+  if (!row) return;
+  currentPlan[idx] = normalizePlanItem({ ...row, media_visual_mode: target.value || "auto" });
+  planMessage.textContent = `${slotLabel(row.slot)}枠の画像モードを更新しました。`;
 });
 
 document.querySelectorAll(".slot-run").forEach((btn) => {
