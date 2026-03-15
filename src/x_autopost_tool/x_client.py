@@ -109,7 +109,9 @@ class XClient:
         return out
 
     def upload_media(self, path: str) -> str:
+        print(f"[X MEDIA UPLOAD] path={path}")
         media = self.v1_api.media_upload(filename=path)
+        print(f"[X MEDIA UPLOAD] ok media_id={media.media_id_string}")
         return str(media.media_id_string)
 
     def create_post(
@@ -130,6 +132,8 @@ class XClient:
                     print(f"[media] upload failed: {p} {e}")
             if media_ids:
                 kwargs["media_ids"] = media_ids
+            else:
+                print("[X POST WARN] media_paths were provided but no media_ids were uploaded")
         resp = self.client.create_tweet(**kwargs)
         return str(resp.data.get("id")) if resp and resp.data else ""
 

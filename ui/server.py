@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import shlex
 import shutil
 import subprocess
@@ -217,6 +218,23 @@ def _validate_queue_media_path(raw_path: str) -> str:
     if ROOT.resolve() not in p.parents and DATA_ROOT.resolve() not in p.parents:
         raise ValueError("invalid media path")
     return str(p)
+
+
+def _persist_queue_media(raw_path: str) -> str:
+    value = _validate_queue_media_path(raw_path)
+    if not value:
+        return ""
+    p = Path(value).resolve()
+    if not p.exists():
+        raise ValueError("media file does not exist")
+    if DATA_ROOT.resolve() in p.parents or p == DATA_ROOT.resolve():
+        return str(p)
+    QUEUE_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", p.stem).strip("._") or "queue_media"
+    target = QUEUE_MEDIA_DIR / f"{safe_stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}{p.suffix.lower()}"
+    shutil.copy2(p, target)
+    print(f"[QUEUE MEDIA PERSIST] src={p} dst={target}")
+    return str(target)
 
 
 def _semantic_domain_guard(topic: str, text: str) -> tuple[bool, str]:
@@ -1236,6 +1254,12 @@ def api_save_queue():
         allow_empty_text = refresh_mode == "jit_noon"
         if not schedule_at or not slot or (not text and not allow_empty_text):
             continue
+        raw_media_path = str(item.get("media_path", "")).strip()
+        try:
+            persisted_media_path = _persist_queue_media(raw_media_path)
+        except Exception as e:
+            print(f"[QUEUE MEDIA DROP] schedule_at={schedule_at} slot={slot} path={raw_media_path} err={e}")
+            persisted_media_path = ""
         normalized.append(
             {
                 "schedule_at": schedule_at,
@@ -1246,7 +1270,7 @@ def api_save_queue():
                 "media_source": str(item.get("media_source", "")).strip() or ("existing" if item.get("media_path") else "none"),
                 "media_prompt": str(item.get("media_prompt", "")).strip(),
                 "media_visual_mode": str(item.get("media_visual_mode", "auto")).strip() or "auto",
-                "media_path": _validate_queue_media_path(str(item.get("media_path", "")).strip()),
+                "media_path": persisted_media_path,
                 "source_tweet_id": str(item.get("source_tweet_id", "")).strip(),
                 "source_author": str(item.get("source_author", "")).strip(),
                 "last_refreshed_at": str(item.get("last_refreshed_at", "")).strip(),

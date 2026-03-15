@@ -289,6 +289,7 @@ def _post_due_queue_item(
         f"slot={resolved_slot} "
         f"schedule_at={item.get('schedule_at', '')} "
         f"media={'yes' if media_paths else 'no'} "
+        f"media_path={media_path or '-'} "
         f"reply={'yes' if reply_text else 'no'}"
     )
 
