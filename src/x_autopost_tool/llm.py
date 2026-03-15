@@ -43,6 +43,7 @@ CONCLUSION_HINTS = [
     "順序",
     "比較",
 ]
+WRAP_TOKENS = [" → ", "：", ":", "、", "より", "だけで", "だけでは", "方が", "ので", "から", "ため"]
 
 
 def _client() -> OpenAI:
@@ -98,6 +99,65 @@ def _reorder_to_conclusion_first(text: str) -> str:
     return text.strip()
 
 
+def _split_sentence_preserve_mark(sentence: str) -> tuple[str, str]:
+    stripped = sentence.strip()
+    if not stripped:
+        return "", ""
+    if stripped[-1] in "。！？":
+        return stripped[:-1], stripped[-1]
+    return stripped, ""
+
+
+def _pick_wrap_index(text: str, max_chars: int) -> int:
+    if len(text) <= max_chars:
+        return len(text)
+    lower = max(8, max_chars - 8)
+    upper = min(len(text), max_chars + 6)
+    best = -1
+    for token in WRAP_TOKENS:
+        pos = text.rfind(token, lower, upper)
+        if pos > best:
+            best = pos + len(token.rstrip())
+    if best > 0:
+        return best
+    return max_chars
+
+
+def _wrap_sentence_for_sns(sentence: str, max_chars: int) -> list[str]:
+    core, punct = _split_sentence_preserve_mark(sentence)
+    if not core:
+        return []
+    lines: list[str] = []
+    rest = core
+    while len(rest) > max_chars:
+        cut = _pick_wrap_index(rest, max_chars)
+        head = rest[:cut].strip()
+        if not head:
+            break
+        lines.append(head)
+        rest = rest[cut:].strip()
+    if rest:
+        if punct:
+            rest = f"{rest}{punct}"
+        lines.append(rest)
+    elif lines and punct:
+        lines[-1] = f"{lines[-1]}{punct}"
+    return [ln for ln in lines if ln]
+
+
+def _format_body_for_sns(text: str, slot_name: str) -> str:
+    max_chars = 18 if slot_name == "noon" else 24
+    sentences = _sentences_from_body(text)
+    blocks: list[str] = []
+    for sentence in sentences:
+        wrapped = _wrap_sentence_for_sns(sentence, max_chars=max_chars)
+        if wrapped:
+            blocks.append("\n".join(wrapped))
+    if not blocks:
+        return text.strip()
+    return "\n\n".join(blocks).strip()
+
+
 def enforce_post_density_rules(text: str, slot_name: str = "morning") -> str:
     raw = (text or "").strip()
     body, _, tail = raw.partition("\n\n#")
@@ -112,6 +172,7 @@ def enforce_post_density_rules(text: str, slot_name: str = "morning") -> str:
         lines.append(cleaned)
     body = "\n".join([ln for ln in lines if ln]).strip()
     body = _reorder_to_conclusion_first(body)
+    body = _format_body_for_sns(body, slot_name=slot_name)
     body = re.sub(r"\n{3,}", "\n\n", body).strip()
     if tail:
         return f"{body}\n\n#{tail}".strip()
@@ -167,7 +228,7 @@ def normalize_x_post_text(text: str, slot_name: str = "morning") -> str:
             if len(tags) >= 2:
                 break
 
-    tag_line = " ".join(tags[:3])
+    tag_line = "\n".join(tags[:3])
     if body:
         return f"{body}\n\n{tag_line}"
     return tag_line
