@@ -36,6 +36,10 @@
             <span class="material-symbols-rounded">calendar_month</span>
             <span>投稿計画</span>
           </button>
+          <button class="pill" data-page="analytics">
+            <span class="material-symbols-rounded">monitoring</span>
+            <span>投稿分析</span>
+          </button>
           <button class="pill" data-page="queue">
             <span class="material-symbols-rounded">schedule</span>
             <span>投稿キュー</span>
@@ -469,6 +473,129 @@
             <div class="queue-board" id="queueTbody"></div>
             <p class="helper">投稿文欄をクリックすると、上部のX表示プレビューに反映されます。</p>
           </article>
+
+          <article class="card analytics" id="section-analytics" data-page="analytics">
+            <div class="card-head">
+              <div>
+                <h2>投稿分析</h2>
+                <p>投稿実績を見て、次の改善につなげるためのダッシュボード</p>
+              </div>
+              <div class="tweet-actions">
+                <button class="ghost" id="analyticsRefreshBtn">metrics更新</button>
+              </div>
+            </div>
+            <div class="analytics-filters">
+              <label>
+                <span>期間</span>
+                <select id="analyticsDays">
+                  <option value="30">直近30日</option>
+                  <option value="60">直近60日</option>
+                  <option value="90">直近90日</option>
+                  <option value="365">直近1年</option>
+                  <option value="0">全期間</option>
+                </select>
+              </label>
+              <label>
+                <span>slot</span>
+                <select id="analyticsSlotFilter">
+                  <option value="">すべて</option>
+                  <option value="morning">morning</option>
+                  <option value="noon">noon</option>
+                  <option value="evening">evening</option>
+                  <option value="manual">manual</option>
+                </select>
+              </label>
+              <label>
+                <span>content_type</span>
+                <select id="analyticsTypeFilter">
+                  <option value="">すべて</option>
+                  <option value="design">design</option>
+                  <option value="news">news</option>
+                  <option value="quote">quote</option>
+                  <option value="manual">manual</option>
+                </select>
+              </label>
+              <label>
+                <span>source</span>
+                <select id="analyticsSourceFilter">
+                  <option value="">すべて</option>
+                  <option value="auto">auto</option>
+                  <option value="queue">queue</option>
+                  <option value="manual">manual</option>
+                </select>
+              </label>
+              <label>
+                <span>media</span>
+                <select id="analyticsMediaFilter">
+                  <option value="">すべて</option>
+                  <option value="yes">あり</option>
+                  <option value="no">なし</option>
+                </select>
+              </label>
+              <label>
+                <span>並び順</span>
+                <select id="analyticsSort">
+                  <option value="posted_at_desc">新しい順</option>
+                  <option value="impressions_desc">インプレッション順</option>
+                  <option value="engagement_desc">ER順</option>
+                  <option value="likes_desc">いいね順</option>
+                </select>
+              </label>
+            </div>
+            <p class="helper" id="analyticsMessage">投稿実績を読み込みます。</p>
+            <div class="analytics-kpis">
+              <article class="analytics-kpi-card">
+                <span>直近30日投稿数</span>
+                <strong id="analyticsCount">0</strong>
+              </article>
+              <article class="analytics-kpi-card">
+                <span>平均インプレッション</span>
+                <strong id="analyticsAvgImpressions">0</strong>
+              </article>
+              <article class="analytics-kpi-card">
+                <span>平均ER</span>
+                <strong id="analyticsAvgEngagement">0%</strong>
+              </article>
+              <article class="analytics-kpi-card accent">
+                <span>ベスト / ワースト</span>
+                <strong id="analyticsBestPost">-</strong>
+                <small id="analyticsWorstPost">-</small>
+              </article>
+            </div>
+            <div class="analytics-grid">
+              <section class="analytics-block">
+                <div class="card-head compact">
+                  <div><h3>slot別平均</h3></div>
+                </div>
+                <div id="analyticsSlotCompare" class="analytics-compare-list"></div>
+              </section>
+              <section class="analytics-block">
+                <div class="card-head compact">
+                  <div><h3>content_type別平均</h3></div>
+                </div>
+                <div id="analyticsTypeCompare" class="analytics-compare-list"></div>
+              </section>
+              <section class="analytics-block">
+                <div class="card-head compact">
+                  <div><h3>文字数帯別平均</h3></div>
+                </div>
+                <div id="analyticsLengthCompare" class="analytics-compare-list"></div>
+              </section>
+              <section class="analytics-block">
+                <div class="card-head compact">
+                  <div><h3>media有無別平均</h3></div>
+                </div>
+                <div id="analyticsMediaCompare" class="analytics-compare-list"></div>
+              </section>
+              <section class="analytics-block analytics-block-wide">
+                <div class="card-head compact">
+                  <div><h3>source別平均</h3></div>
+                </div>
+                <div id="analyticsSourceCompare" class="analytics-compare-list"></div>
+              </section>
+            </div>
+            <div class="analytics-list" id="analyticsList"></div>
+          </article>
         </div>
       </section>
     </main>
@@ -478,6 +605,20 @@
       <div class="image-modal-dialog" role="dialog" aria-modal="true" aria-label="画像プレビュー">
         <img id="imageModalPreview" alt="expanded preview" />
         <button type="button" class="ghost image-modal-close" id="imageModalCloseBtn">×</button>
+      </div>
+    </div>
+
+    <div class="detail-modal" id="analyticsDetailModal" aria-hidden="true">
+      <div class="detail-modal-backdrop"></div>
+      <div class="detail-modal-dialog" role="dialog" aria-modal="true" aria-label="投稿詳細">
+        <div class="card-head compact">
+          <div>
+            <h3>投稿詳細</h3>
+            <p id="analyticsDetailMeta">-</p>
+          </div>
+        </div>
+        <div class="analytics-detail-body" id="analyticsDetailBody"></div>
+        <button type="button" class="ghost image-modal-close" id="analyticsDetailCloseBtn">×</button>
       </div>
     </div>
 

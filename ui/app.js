@@ -73,6 +73,28 @@ const queueMessage = document.getElementById("queueMessage");
 const queueTodayCount = document.getElementById("queueTodayCount");
 const queueRemainingCount = document.getElementById("queueRemainingCount");
 const queuePostedCount = document.getElementById("queuePostedCount");
+const analyticsDays = document.getElementById("analyticsDays");
+const analyticsSlotFilter = document.getElementById("analyticsSlotFilter");
+const analyticsTypeFilter = document.getElementById("analyticsTypeFilter");
+const analyticsSourceFilter = document.getElementById("analyticsSourceFilter");
+const analyticsMediaFilter = document.getElementById("analyticsMediaFilter");
+const analyticsSort = document.getElementById("analyticsSort");
+const analyticsMessage = document.getElementById("analyticsMessage");
+const analyticsCount = document.getElementById("analyticsCount");
+const analyticsAvgImpressions = document.getElementById("analyticsAvgImpressions");
+const analyticsAvgEngagement = document.getElementById("analyticsAvgEngagement");
+const analyticsBestPost = document.getElementById("analyticsBestPost");
+const analyticsWorstPost = document.getElementById("analyticsWorstPost");
+const analyticsSlotCompare = document.getElementById("analyticsSlotCompare");
+const analyticsTypeCompare = document.getElementById("analyticsTypeCompare");
+const analyticsLengthCompare = document.getElementById("analyticsLengthCompare");
+const analyticsMediaCompare = document.getElementById("analyticsMediaCompare");
+const analyticsSourceCompare = document.getElementById("analyticsSourceCompare");
+const analyticsList = document.getElementById("analyticsList");
+const analyticsDetailModal = document.getElementById("analyticsDetailModal");
+const analyticsDetailMeta = document.getElementById("analyticsDetailMeta");
+const analyticsDetailBody = document.getElementById("analyticsDetailBody");
+const analyticsDetailCloseBtn = document.getElementById("analyticsDetailCloseBtn");
 const railHint = document.getElementById("railHint");
 const generateImageBtn = document.getElementById("generateImageBtn");
 const deleteSelectedQueueBtn = document.getElementById("deleteSelectedQueueBtn");
@@ -83,6 +105,7 @@ const imageModalCloseBtn = document.getElementById("imageModalCloseBtn");
 
 let currentPlan = [];
 let currentQueue = [];
+let analyticsItems = [];
 let generatedMediaPath = "";
 let currentPage = "dashboard";
 let imageCooldownTimer = null;
@@ -331,6 +354,29 @@ function formatQueueDateTime(value) {
   return timePart ? `${datePart} / ${timePart.slice(0, 5)}` : datePart;
 }
 
+function formatMetricNumber(value) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return "0";
+  return new Intl.NumberFormat("ja-JP").format(Math.round(num));
+}
+
+function formatPercent(value) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return "0%";
+  return `${num.toFixed(2)}%`;
+}
+
+function analyticsLabel(kind, key) {
+  const maps = {
+    slot: { morning: "Morning", noon: "Noon", evening: "Evening", manual: "Manual", "-": "-" },
+    content_type: { design: "design", news: "news", quote: "quote", manual: "manual", "-": "-" },
+    length_bucket: { short: "短文", medium: "中短文", long: "長文", xlong: "超長文", "-": "-" },
+    has_media: { media: "mediaあり", no_media: "mediaなし", "-": "-" },
+    source: { auto: "auto", queue: "queue", manual: "manual", "-": "-" },
+  };
+  return (maps[kind] && maps[kind][key]) || key || "-";
+}
+
 function queueStatusLabel(row) {
   if (row.posted || row.status === "posted") return "投稿済み";
   if (row.refresh_mode === "jit_noon" && !(row.text || "").trim()) return "直前生成";
@@ -357,6 +403,159 @@ function updateQueueKpis(items) {
   if (queueTodayCount) queueTodayCount.textContent = String(todayCount);
   if (queueRemainingCount) queueRemainingCount.textContent = String(remainingCount);
   if (queuePostedCount) queuePostedCount.textContent = String(postedCount);
+}
+
+function renderCompareList(target, kind, rows) {
+  if (!target) return;
+  if (!rows || !rows.length) {
+    target.innerHTML = `<p class="helper">まだデータがありません。</p>`;
+    return;
+  }
+  target.innerHTML = rows
+    .map(
+      (row) => `
+        <article class="analytics-compare-item">
+          <div>
+            <strong>${esc(analyticsLabel(kind, row.key))}</strong>
+            <small>${formatMetricNumber(row.count)}件</small>
+          </div>
+          <div class="analytics-compare-metrics">
+            <span>Imp ${formatMetricNumber(row.avg_impressions)}</span>
+            <span>ER ${formatPercent(row.avg_engagement_rate)}</span>
+          </div>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function renderAnalyticsSummary(summary) {
+  if (!summary) return;
+  if (analyticsCount) analyticsCount.textContent = formatMetricNumber(summary.last30_posts);
+  if (analyticsAvgImpressions) analyticsAvgImpressions.textContent = formatMetricNumber(summary.avg_impressions);
+  if (analyticsAvgEngagement) analyticsAvgEngagement.textContent = formatPercent(summary.avg_engagement_rate);
+  if (analyticsBestPost) {
+    analyticsBestPost.textContent = summary.best_post
+      ? `${formatPercent(summary.best_post.engagement_rate)} / ${summary.best_post.slot || "-"}`
+      : "-";
+  }
+  if (analyticsWorstPost) {
+    analyticsWorstPost.textContent = summary.worst_post
+      ? `${formatPercent(summary.worst_post.engagement_rate)} / ${summary.worst_post.slot || "-"}`
+      : "-";
+  }
+}
+
+function openAnalyticsDetail(item) {
+  if (!analyticsDetailModal || !analyticsDetailMeta || !analyticsDetailBody) return;
+  analyticsDetailMeta.textContent = `${item.posted_at || "-"} / ${item.slot || "-"} / ${item.content_type || "-"}`;
+  analyticsDetailBody.innerHTML = `
+    <article class="analytics-detail-card">
+      <div class="analytics-detail-text">${esc(item.cleaned_text || item.text || "").replaceAll("\n", "<br />")}</div>
+      <div class="analytics-detail-grid">
+        <div><span>Imp</span><strong>${formatMetricNumber(item.impressions)}</strong></div>
+        <div><span>Like</span><strong>${formatMetricNumber(item.likes)}</strong></div>
+        <div><span>Repost</span><strong>${formatMetricNumber(item.reposts)}</strong></div>
+        <div><span>Reply</span><strong>${formatMetricNumber(item.replies)}</strong></div>
+        <div><span>Bookmark</span><strong>${formatMetricNumber(item.bookmarks)}</strong></div>
+        <div><span>ER</span><strong>${formatPercent(item.engagement_rate)}</strong></div>
+      </div>
+      <div class="analytics-attr-grid">
+        <div><span>source</span><strong>${esc(item.source || "-")}</strong></div>
+        <div><span>pattern</span><strong>${esc(item.pattern_type || "-")}</strong></div>
+        <div><span>topic</span><strong>${esc(item.topic || "-")}</strong></div>
+        <div><span>claim</span><strong>${esc(item.claim || "-")}</strong></div>
+        <div><span>structure</span><strong>${esc(item.structure || "-")}</strong></div>
+        <div><span>media</span><strong>${item.has_media ? "あり" : "なし"}</strong></div>
+      </div>
+    </article>
+  `;
+  analyticsDetailModal.classList.add("show");
+  analyticsDetailModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+}
+
+function closeAnalyticsDetail() {
+  if (!analyticsDetailModal) return;
+  analyticsDetailModal.classList.remove("show");
+  analyticsDetailModal.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
+}
+
+function renderAnalyticsList(items) {
+  if (!analyticsList) return;
+  if (!items.length) {
+    analyticsList.innerHTML = `<p class="helper">条件に合う投稿がありません。</p>`;
+    return;
+  }
+  analyticsList.innerHTML = items
+    .map(
+      (item) => `
+        <article class="analytics-post-card" data-tweet-id="${esc(item.tweet_id)}">
+          <div class="analytics-post-top">
+            <div class="analytics-post-meta">
+              <span>${esc(item.posted_at || "-")}</span>
+              <span>${esc(item.slot || "-")}</span>
+              <span>${esc(item.content_type || "-")}</span>
+              <span>${esc(item.source || "-")}</span>
+              <span>${item.has_media ? "media" : "text"}</span>
+            </div>
+            <div class="analytics-post-stats">
+              <strong>Imp ${formatMetricNumber(item.impressions)}</strong>
+              <span>ER ${formatPercent(item.engagement_rate)}</span>
+            </div>
+          </div>
+          <p class="analytics-post-text">${esc(item.text_preview || "")}</p>
+          <div class="analytics-post-bottom">
+            <span>Like ${formatMetricNumber(item.likes)}</span>
+            <span>Repost ${formatMetricNumber(item.reposts)}</span>
+            <span>Reply ${formatMetricNumber(item.replies)}</span>
+            <span>Bookmark ${formatMetricNumber(item.bookmarks)}</span>
+          </div>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+async function loadAnalytics() {
+  if (!analyticsMessage) return;
+  analyticsMessage.textContent = "分析データを読み込み中...";
+  try {
+    const params = new URLSearchParams({
+      days: analyticsDays?.value || "30",
+      slot: analyticsSlotFilter?.value || "",
+      content_type: analyticsTypeFilter?.value || "",
+      source: analyticsSourceFilter?.value || "",
+      has_media: analyticsMediaFilter?.value || "",
+      sort: analyticsSort?.value || "posted_at_desc",
+    });
+    const data = await fetchJson(`/api/analytics?${params.toString()}`);
+    analyticsItems = data.items || [];
+    renderAnalyticsSummary(data.summary || {});
+    renderCompareList(analyticsSlotCompare, "slot", data.comparisons?.slot || []);
+    renderCompareList(analyticsTypeCompare, "content_type", data.comparisons?.content_type || []);
+    renderCompareList(analyticsLengthCompare, "length_bucket", data.comparisons?.length_bucket || []);
+    renderCompareList(analyticsMediaCompare, "has_media", data.comparisons?.has_media || []);
+    renderCompareList(analyticsSourceCompare, "source", data.comparisons?.source || []);
+    renderAnalyticsList(analyticsItems);
+    analyticsMessage.textContent = `${formatMetricNumber(analyticsItems.length)}件の投稿を表示しています。`;
+  } catch (e) {
+    analyticsMessage.textContent = `分析読み込みエラー: ${e}`;
+  }
+}
+
+async function refreshAnalytics() {
+  if (!analyticsMessage) return;
+  analyticsMessage.textContent = "Xから最新 metrics を更新中...";
+  try {
+    const data = await fetchJson("/api/analytics/refresh", { method: "POST" });
+    analyticsMessage.textContent = data.message || "metrics を更新しました。";
+    showButtonSuccess(document.getElementById("analyticsRefreshBtn"));
+    await loadAnalytics();
+  } catch (e) {
+    analyticsMessage.textContent = `metrics 更新エラー: ${e}`;
+  }
 }
 
 function planMediaStatusLabel(row) {
@@ -1515,6 +1714,7 @@ const pageMeta = {
   dashboard: "ダッシュボード",
   generation: "投稿生成",
   planner: "投稿計画",
+  analytics: "投稿分析",
   queue: "投稿キュー",
   settings: "設定",
 };
@@ -1534,6 +1734,9 @@ function setPage(page) {
   railPageButtons.forEach((b) => b.classList.toggle("active", b.dataset.page === page));
   if (railHint) railHint.textContent = pageMeta[page] || "";
   localStorage.setItem("ui_current_page", page);
+  if (page === "analytics") {
+    loadAnalytics();
+  }
 }
 
 topPageButtons.forEach((btn) => {
@@ -1560,6 +1763,7 @@ document.getElementById("testPostBtn").addEventListener("click", testPost);
 document.getElementById("saveTargetBtn").addEventListener("click", saveTargetAccount);
 document.getElementById("verifyTargetBtn").addEventListener("click", verifyTargetAccount);
 document.getElementById("applyPlanToQueueBtn").addEventListener("click", applyPlanToQueue);
+document.getElementById("analyticsRefreshBtn")?.addEventListener("click", refreshAnalytics);
 document.getElementById("queueHeroBuildBtn")?.addEventListener("click", () => {
   setPage("planner");
   document.getElementById("buildPlanBtn")?.click();
@@ -1572,6 +1776,25 @@ document.getElementById("saveQueueBtn").addEventListener("click", saveQueue);
 document.getElementById("loadQueueBtn").addEventListener("click", loadQueue);
 deleteSelectedQueueBtn?.addEventListener("click", deleteSelectedQueueRows);
 clearQueueBtn?.addEventListener("click", clearQueueRows);
+analyticsList?.addEventListener("click", (ev) => {
+  const target = ev.target;
+  if (!(target instanceof HTMLElement)) return;
+  const card = target.closest(".analytics-post-card");
+  if (!card) return;
+  const tweetId = card.getAttribute("data-tweet-id") || "";
+  const item = analyticsItems.find((row) => row.tweet_id === tweetId);
+  if (item) openAnalyticsDetail(item);
+});
+analyticsDetailCloseBtn?.addEventListener("click", closeAnalyticsDetail);
+analyticsDetailModal?.querySelector(".detail-modal-backdrop")?.addEventListener("click", closeAnalyticsDetail);
+[
+  analyticsDays,
+  analyticsSlotFilter,
+  analyticsTypeFilter,
+  analyticsSourceFilter,
+  analyticsMediaFilter,
+  analyticsSort,
+].forEach((el) => el?.addEventListener("change", () => loadAnalytics()));
 
 planTbody.addEventListener("click", async (ev) => {
   const target = ev.target;
@@ -1611,6 +1834,9 @@ imageModal?.addEventListener("click", (ev) => {
 document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape" && imageModal?.classList.contains("show")) {
     closeImageModal();
+  }
+  if (ev.key === "Escape" && analyticsDetailModal?.classList.contains("show")) {
+    closeAnalyticsDetail();
   }
 });
 

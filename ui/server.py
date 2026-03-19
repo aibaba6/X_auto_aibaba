@@ -49,6 +49,16 @@ if str(ROOT) not in sys.path:
 from src.x_autopost_tool.collectors import fetch_rss_items, filter_blocked
 from src.x_autopost_tool.content_types import build_evening_type_drafts, build_morning_type_drafts, build_quote_fallback_drafts
 from src.x_autopost_tool.llm import build_post_drafts, normalize_x_post_text
+from src.x_autopost_tool.analytics_store import (
+    analytics_store_path,
+    backfill_from_history,
+    compare_group,
+    load_analytics,
+    merge_metric_snapshots,
+    save_analytics,
+    summarize_entries,
+    upsert_post_record,
+)
 from src.x_autopost_tool.media_tools import (
     build_nano_banana_prompt_payload,
     generate_image_with_freepik_mystic,
@@ -88,6 +98,7 @@ from src.x_autopost_tool.uniqueness import (
     save_memory,
     strict_fingerprint,
 )
+from src.x_autopost_tool.x_client import XClient
 
 app = Flask(__name__, static_folder=str(UI_DIR), static_url_path="")
 
@@ -184,6 +195,66 @@ def _load_media_config() -> dict:
         "morning_image_output_dir": str(media.get("morning_image_output_dir", "generated_media")),
         "noon_reply_source_link": bool(media.get("noon_reply_source_link", True)),
     }
+
+
+def _analytics_path(conf=None) -> Path:
+    history_path = conf.post_history_path if conf else "post_history.yaml"
+    return analytics_store_path(history_path)
+
+
+def _serialize_analytics_entry(entry: dict) -> dict:
+    row = dict(entry)
+    text = str(row.get("cleaned_text", row.get("text", ""))).strip()
+    row["text_preview"] = text if len(text) <= 180 else f"{text[:180]}..."
+    row["text_length"] = len(text)
+    row["hashtags"] = row.get("hashtags", []) or []
+    row["engagement_rate"] = float(row.get("engagement_rate", 0.0) or 0.0)
+    row["impressions"] = int(row.get("impressions", 0) or 0)
+    row["likes"] = int(row.get("likes", 0) or 0)
+    row["reposts"] = int(row.get("reposts", 0) or 0)
+    row["replies"] = int(row.get("replies", 0) or 0)
+    row["bookmarks"] = int(row.get("bookmarks", 0) or 0)
+    row["has_media"] = bool(row.get("has_media", False))
+    return row
+
+
+def _apply_analytics_filters(entries: list[dict], args) -> list[dict]:
+    filtered = list(entries)
+    days = int(str(args.get("days", "30") or "30"))
+    slot = str(args.get("slot", "")).strip()
+    content_type = str(args.get("content_type", "")).strip()
+    source = str(args.get("source", "")).strip()
+    has_media = str(args.get("has_media", "")).strip().lower()
+    sort = str(args.get("sort", "posted_at_desc")).strip()
+
+    if days > 0:
+        cutoff = datetime.now() - timedelta(days=days)
+        filtered = [
+            entry
+            for entry in filtered
+            if str(entry.get("posted_at", "")).strip()
+            and datetime.fromisoformat(str(entry.get("posted_at", "")).strip()) >= cutoff
+        ]
+    if slot:
+        filtered = [entry for entry in filtered if str(entry.get("slot", "")).strip() == slot]
+    if content_type:
+        filtered = [entry for entry in filtered if str(entry.get("content_type", "")).strip() == content_type]
+    if source:
+        filtered = [entry for entry in filtered if str(entry.get("source", "")).strip() == source]
+    if has_media in {"yes", "no"}:
+        want = has_media == "yes"
+        filtered = [entry for entry in filtered if bool(entry.get("has_media", False)) is want]
+
+    sort_map = {
+        "posted_at_desc": lambda row: str(row.get("posted_at", "")),
+        "posted_at_asc": lambda row: str(row.get("posted_at", "")),
+        "impressions_desc": lambda row: float(row.get("impressions", 0) or 0),
+        "likes_desc": lambda row: float(row.get("likes", 0) or 0),
+        "engagement_desc": lambda row: float(row.get("engagement_rate", 0.0) or 0.0),
+    }
+    reverse = sort != "posted_at_asc"
+    filtered.sort(key=sort_map.get(sort, sort_map["posted_at_desc"]), reverse=reverse)
+    return filtered
 
 
 def _style_reference_posts_from_config() -> list[str]:
@@ -1710,6 +1781,50 @@ def api_account():
         return jsonify({"ok": False, "message": f"X連動エラー: {e}"}), 400
 
 
+@app.get("/api/analytics")
+def api_analytics():
+    conf = load_config(str(CONFIG_PATH)) if CONFIG_PATH.exists() else None
+    store = load_analytics(_analytics_path(conf))
+    history = load_history(conf.post_history_path) if conf else load_history("post_history.yaml")
+    if backfill_from_history(store, history.entries):
+        save_analytics(store)
+    entries = [_serialize_analytics_entry(entry) for entry in store.entries]
+    filtered = _apply_analytics_filters(entries, request.args)
+    payload = {
+        "ok": True,
+        "items": filtered,
+        "summary": summarize_entries(filtered),
+        "comparisons": {
+            "slot": compare_group(filtered, "slot"),
+            "content_type": compare_group(filtered, "content_type"),
+            "length_bucket": compare_group(filtered, "length_bucket"),
+            "has_media": compare_group(filtered, "has_media"),
+            "source": compare_group(filtered, "source"),
+        },
+    }
+    return jsonify(payload)
+
+
+@app.post("/api/analytics/refresh")
+def api_refresh_analytics():
+    conf = load_config(str(CONFIG_PATH)) if CONFIG_PATH.exists() else None
+    store = load_analytics(_analytics_path(conf))
+    history = load_history(conf.post_history_path) if conf else load_history("post_history.yaml")
+    if backfill_from_history(store, history.entries):
+        save_analytics(store)
+    metrics = XClient().self_post_metrics(limit=100)
+    updated = merge_metric_snapshots(store, metrics)
+    save_analytics(store)
+    return jsonify(
+        {
+            "ok": True,
+            "updated": updated,
+            "fetched": len(metrics),
+            "message": f"{updated}件の投稿 metrics を更新しました。",
+        }
+    )
+
+
 @app.post("/api/run_dry")
 def api_run_dry():
     slot = request.json.get("slot", "morning") if request.is_json else "morning"
@@ -1813,6 +1928,22 @@ def api_test_post():
             pattern_type="manual",
         )
         save_history(history)
+        analytics = load_analytics(_analytics_path(conf))
+        upsert_post_record(
+            analytics,
+            tweet_id=tweet_id,
+            posted_at=datetime.now().isoformat(),
+            text=text,
+            slot="manual",
+            source="test-post",
+            has_media=bool(file or media_path),
+            content_type="manual",
+            pattern_type="manual",
+            topic="manual_test_post",
+            claim="manual_test_post",
+            structure="manual",
+        )
+        save_analytics(analytics)
         return jsonify({"ok": True, "tweet_id": tweet_id, "tweet_url": tweet_url, "message": "試験投稿しました。"})
     except Exception as e:
         return jsonify({"ok": False, "message": f"試験投稿エラー: {e}"}), 400

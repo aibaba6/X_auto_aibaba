@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from .collectors import fetch_rss_items, filter_blocked, rank_quote_candidates
+from .analytics_store import analytics_store_path, load_analytics, save_analytics, upsert_post_record
 from .content_types import build_evening_type_drafts, build_morning_type_drafts, build_quote_fallback_drafts
 from .llm import build_noon_news_candidates, build_post_drafts, build_quote_post, normalize_x_post_text
 from .media_tools import generate_image_with_freepik_mystic, generate_image_with_nanobanana, generate_image_with_nanobanana_pro_api
@@ -368,6 +369,39 @@ def _safe_create_reply(x: XClient, text: str, in_reply_to_tweet_id: str, label: 
         return None
 
 
+def _record_post_analytics(
+    config: AppConfig,
+    *,
+    tweet_id: str,
+    posted_at: str,
+    text: str,
+    slot: str,
+    source: str,
+    has_media: bool,
+    content_type: str = "",
+    pattern_type: str = "",
+    topic: str = "",
+    claim: str = "",
+    structure: str = "",
+) -> None:
+    analytics = load_analytics(analytics_store_path(config.post_history_path))
+    upsert_post_record(
+        analytics,
+        tweet_id=tweet_id,
+        posted_at=posted_at,
+        text=text,
+        slot=slot,
+        source=source,
+        has_media=has_media,
+        content_type=content_type,
+        pattern_type=pattern_type,
+        topic=topic,
+        claim=claim,
+        structure=structure,
+    )
+    save_analytics(analytics)
+
+
 def _queue_item_id(item: dict) -> str:
     return str(item.get("id", "")).strip() or "-"
 
@@ -579,6 +613,20 @@ def _post_due_queue_item(
         pattern_id=str(item.get("pattern_id", "")).strip(),
     )
     save_history(history)
+    _record_post_analytics(
+        config,
+        tweet_id=tweet_id,
+        posted_at=now.isoformat(),
+        text=text,
+        slot=resolved_slot,
+        source="queue-post",
+        has_media=bool(media_paths),
+        content_type=str(item.get("content_type", "")).strip(),
+        pattern_type=str(item.get("pattern_type", item.get("content_type", ""))).strip(),
+        topic=str(item.get("topic", "")).strip(),
+        claim=str(item.get("claim", "")).strip(),
+        structure=str(item.get("pattern_id", "")).strip() or str(item.get("structure", "")).strip(),
+    )
     item["posted"] = True
     item["status"] = "posted"
     item["posted_at"] = now.replace(microsecond=0).isoformat()
@@ -669,6 +717,20 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                     pattern_id=fallback_noon.structure,
                 )
                 save_history(history)
+                _record_post_analytics(
+                    config,
+                    tweet_id=tweet_id,
+                    posted_at=now.isoformat(),
+                    text=fallback_noon.text,
+                    slot="noon",
+                    source="noon-empty-source-fallback",
+                    has_media=False,
+                    content_type=fallback_noon.content_type,
+                    pattern_type=fallback_noon.pattern_type,
+                    topic=fallback_noon.topic,
+                    claim=fallback_noon.claim,
+                    structure=fallback_noon.structure,
+                )
                 print(f"noon fallback posted: {tweet_id}")
                 return
             print("[NO POST GENERATED] reason=noon_empty_source_post_failed")
@@ -732,6 +794,20 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                     posted_slot_fingerprints.add(strict_fingerprint(picked_noon.text))
                     posted_slot_loose_fingerprints.add(loose_fingerprint(picked_noon.text))
                     save_history(history)
+                    _record_post_analytics(
+                        config,
+                        tweet_id=tweet_id,
+                        posted_at=now.isoformat(),
+                        text=picked_noon.text,
+                        slot="noon",
+                        source="noon-news",
+                        has_media=False,
+                        content_type="news",
+                        pattern_type=getattr(picked_noon, "pattern_type", "news"),
+                        topic=getattr(picked_noon, "topic", ""),
+                        claim=getattr(picked_noon, "claim", ""),
+                        structure=getattr(picked_noon, "structure", ""),
+                    )
                     print(f"noon news posted: {tweet_id}")
                     return
         fallback_noon = _short_fallback_draft("noon")
@@ -757,6 +833,20 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                 pattern_id=fallback_noon.structure,
             )
             save_history(history)
+            _record_post_analytics(
+                config,
+                tweet_id=tweet_id,
+                posted_at=now.isoformat(),
+                text=fallback_noon.text,
+                slot="noon",
+                source="noon-fallback",
+                has_media=False,
+                content_type=fallback_noon.content_type,
+                pattern_type=fallback_noon.pattern_type,
+                topic=fallback_noon.topic,
+                claim=fallback_noon.claim,
+                structure=fallback_noon.structure,
+            )
             print(f"noon fallback posted: {tweet_id}")
             return
         print("[UNIQUE HOLD] reason=no_unique_candidate slot=noon")
@@ -966,6 +1056,20 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             angle=d.angle,
             pattern_id=d.structure,
         )
+        _record_post_analytics(
+            config,
+            tweet_id=tweet_id,
+            posted_at=now.isoformat(),
+            text=d.text,
+            slot=resolved_slot,
+            source="main-post",
+            has_media=bool(media_paths),
+            content_type=d.content_type,
+            pattern_type=d.pattern_type,
+            topic=d.topic,
+            claim=d.claim,
+            structure=d.structure,
+        )
         posted_slot_fingerprints.add(strict_fingerprint(d.text))
         posted_slot_loose_fingerprints.add(loose_fingerprint(d.text))
         history_changed = True
@@ -1031,6 +1135,20 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             content_type="quote",
             pattern_type="quote",
             angle="外部投稿を自分の視点で補足する",
+        )
+        _record_post_analytics(
+            config,
+            tweet_id=quote_id,
+            posted_at=now.isoformat(),
+            text=quote_text,
+            slot=resolved_slot,
+            source="quote-post",
+            has_media=False,
+            content_type="quote",
+            pattern_type="quote",
+            topic=c.author,
+            claim="外部投稿を自分の視点で補足する",
+            structure="引用解釈型",
         )
         history_changed = True
         posted_quotes += 1
