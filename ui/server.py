@@ -69,12 +69,14 @@ from src.x_autopost_tool.uniqueness import (
     MemoryStore,
     append_history,
     duplicate_check,
+    evening_duplicate_check,
     history_fingerprints,
     loose_fingerprint,
     load_history,
     load_memory,
     register_text,
     semantic_duplicate_check,
+    semantic_signature,
     semantic_summaries,
     save_history,
     save_memory,
@@ -365,9 +367,15 @@ def _seen_keys(text: str) -> set[str]:
     value = (text or "").strip()
     if not value:
         return set()
+    semantic = semantic_signature(value)
     return {
         f"strict:{strict_fingerprint(value)}",
         f"loose:{loose_fingerprint(value)}",
+        f"hook:{semantic.hook_key}",
+        f"topic:{semantic.topic_key}",
+        f"claim:{semantic.claim_key}",
+        f"structure:{semantic.structure}",
+        f"takeaway:{semantic.takeaway_key}",
     }
 
 
@@ -399,6 +407,11 @@ def _is_used_before(
         print("[UNIQUE REJECT] reason=history_loose_duplicate")
         return True
     if history is not None:
+        if slot == "evening":
+            evening = evening_duplicate_check(value, history)
+            if evening.duplicate:
+                print(f"[EVENING REJECT] reason={evening.reason}")
+                return True
         semantic = semantic_duplicate_check(value, history, slot=slot or None)
         if semantic.duplicate:
             print(f"[SEMANTIC REJECT] reason={semantic.reason}")
@@ -489,28 +502,51 @@ def _morning_evergreen_post(index: int, variant: int = 0) -> str:
 EVENING_ARUARU_TOPICS = [
     {
         "title": "修正依頼が3件同時に来る夕方",
-        "body": "優先順位を決める5分が、だいたい一番効く。\n先に“今日やる1件”を固定すると、気持ちがだいぶ落ち着きます。",
+        "body": "優先順位を決める5分が、だいたい一番効く。\n先に“手を付ける1件”を固定すると、気持ちがだいぶ落ち着きます。",
         "tags": "#デザイナーあるある #制作現場 #仕事術",
+        "structure": "作業現場描写型",
     },
     {
         "title": "『なんか違う』と言われたとき",
         "body": "言語化が難しい日はありますよね。\n責めるより、まず基準を一緒に揃えると前に進みやすいです。",
         "tags": "#デザインあるある #コミュニケーション #デザイン実務",
+        "structure": "観察型",
     },
     {
         "title": "締切前ほど細部が気になる",
         "body": "最後の30分で1pxを追い続ける現象、わりとみんな通る道。\n“直す理由が言える1箇所だけ”に絞ると戻りにくいです。",
         "tags": "#デザイナーあるある #UIデザイン #制作フロー",
+        "structure": "失敗型",
     },
     {
         "title": "良い案ほど最初は伝わりにくい",
         "body": "熱量が先行して、説明が追いつかないことがある。\n図を1枚足すだけで、空気が変わることあります。",
         "tags": "#仕事あるある #提案資料 #デザイン思考",
+        "structure": "気づき型",
     },
     {
         "title": "疲れてる日に限って判断が増える",
         "body": "そんな日は“決めない勇気”も大事。\n明日の自分が判断しやすいように、論点だけメモして終えるのもありです。",
         "tags": "#デザイン現場 #仕事あるある #継続改善",
+        "structure": "逆説型",
+    },
+    {
+        "title": "確認待ちが一気に返ってくる夕方",
+        "body": "返答が重なるほど、全部同じ熱量で返すと崩れやすい。\n返す順番より、返さない論点を先に決めるほうが安定します。",
+        "tags": "#制作現場 #コミュニケーション #仕事あるある",
+        "structure": "比較型",
+    },
+    {
+        "title": "デザインより説明に時間がかかる日",
+        "body": "詰まっているのは案ではなく、判断基準かもしれません。\nスクショ1枚に理由を1行添えるだけで会話が進みやすくなります。",
+        "tags": "#提案資料 #デザイン実務 #仕事術",
+        "structure": "一言断言型",
+    },
+    {
+        "title": "手を動かした量のわりに進んだ感じがしない",
+        "body": "作業量と前進感は、案外一致しません。\n次に迷わない状態まで整理できていれば、その日は十分進んでいます。",
+        "tags": "#制作フロー #継続改善 #仕事あるある",
+        "structure": "観察型",
     },
 ]
 
@@ -519,8 +555,9 @@ def _evening_aruaru_post(index: int, variant: int = 0) -> str:
     t = EVENING_ARUARU_TOPICS[index % len(EVENING_ARUARU_TOPICS)]
     variants = [
         f"{t['title']}\n\n{t['body']}\n\n{t['tags']}",
-        f"{t['title']}\n\n{t['body']}\n抱え込みすぎず、1つ決めたら十分です。\n\n{t['tags']}",
-        f"{t['title']}\n\n{t['body']}\nそんな日ほど、次に迷わない一言だけ残して終えるのもありです。\n\n{t['tags']}",
+        f"{t['title']}\n\n{t['body']}\n1つだけ判断を固定すると、崩れにくくなります。\n\n{t['tags']}",
+        f"{t['title']}\n\n{t['body']}\n次に迷わない一言だけ残せば、流れは切れません。\n\n{t['tags']}",
+        f"{t['title']}\n\n{t['body']}\n全部を進めるより、止める論点を決めたほうが整います。\n\n{t['tags']}",
     ]
     return variants[variant % len(variants)]
 
@@ -1146,6 +1183,10 @@ def api_plan_preview():
                             print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
                             semantic = semantic_duplicate_check(candidate, history, slot="evening")
                             print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
+                            print(
+                                f"[EVENING PICKED] hook={semantic.candidate.hook[:60]} "
+                                f"structure={semantic.candidate.structure}"
+                            )
                             picked = candidate
                             break
                 if not picked:
@@ -1159,6 +1200,8 @@ def api_plan_preview():
                         posted_evening_fp,
                         history=history,
                     )
+                if not picked:
+                    print(f"[EVENING HOLD] reason=no_unique_evening_candidate date={d.isoformat()}")
                 text = picked
                 plan.append(
                     {

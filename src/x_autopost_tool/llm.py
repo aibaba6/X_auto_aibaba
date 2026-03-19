@@ -305,6 +305,13 @@ def build_post_drafts(
     ksn = knowledge_snippets or []
     recent_posts = recent_self_posts or []
     recent_semantics = recent_semantic_summaries or []
+    slot_extra = ""
+    if slot_name == "evening":
+        slot_extra = (
+            "evening では、同じ現場あるあるの言い換えを返さないこと。"
+            "『優先順位』『抱え込みすぎ』『修正依頼が集中』『疲れて判断が鈍る』が直近要約にある場合は別テーマへ切り替えること。"
+            "失敗型 / 観察型 / 比較型 / 逆説型 / 一言断言型 / 作業現場描写型 を分散させること。"
+        )
 
     prompt = f"""
 対象読者: {audience}
@@ -319,6 +326,7 @@ PDFストック知見（参考）: {json.dumps(ksn[:4], ensure_ascii=False)}
 曜日テーマ: {weekday_theme}
 投稿枠: {slot_name}
 投稿枠ルール: {slot_style}
+追加制約: {slot_extra or "なし"}
 
 以下の情報を元に、X投稿案を{candidate_count}本作ってください。
 各投稿は日本語{slot_min_chars}-{slot_max_chars}文字、1つの具体的示唆と1つの予測を含める。

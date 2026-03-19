@@ -16,6 +16,7 @@ from .settings import AppConfig
 from .uniqueness import (
     append_history,
     duplicate_check,
+    evening_duplicate_check,
     history_fingerprints,
     load_history,
     load_memory,
@@ -95,6 +96,11 @@ def _is_duplicate_candidate(
         print("[UNIQUE REJECT] reason=posted_loose_duplicate")
         return True
     if history is not None:
+        if slot == "evening":
+            evening = evening_duplicate_check(value, history)
+            if evening.duplicate:
+                print(f"[EVENING REJECT] reason={evening.reason}")
+                return True
         semantic = semantic_duplicate_check(value, history, slot=slot or None)
         if semantic.duplicate:
             print(f"[SEMANTIC REJECT] reason={semantic.reason}")
@@ -596,12 +602,20 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(d.text)}")
             semantic = semantic_duplicate_check(d.text, history, slot=resolved_slot)
             print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
+            if resolved_slot == "evening":
+                print(
+                    f"[EVENING PICKED] hook={semantic.candidate.hook[:60]} "
+                    f"structure={semantic.candidate.structure} "
+                    f"claim={semantic.candidate.claim[:60]}"
+                )
             passed_drafts.append(d)
         else:
             print(f"[DROP DRAFT] {','.join(reasons)}")
     if not passed_drafts:
         print(f"[UNIQUE HOLD] reason=no_unique_candidate slot={resolved_slot}")
         print(f"[SEMANTIC HOLD] reason=no_semantically_unique_candidate slot={resolved_slot}")
+        if resolved_slot == "evening":
+            print("[EVENING HOLD] reason=no_unique_evening_candidate")
         return
 
     print("[3/5] 通常投稿")

@@ -75,6 +75,14 @@ class SemanticCheckResult:
 
 
 @dataclass
+class EveningDuplicateCheckResult:
+    duplicate: bool
+    reason: str
+    candidate: SemanticSignature
+    matched_entry: dict[str, Any] | None
+
+
+@dataclass
 class MemoryStore:
     path: Path
     strict_fingerprints: set[str]
@@ -339,6 +347,67 @@ def semantic_duplicate_check(
         candidate=candidate,
         matched_entry=None,
     )
+
+
+def recent_evening_signatures(store: HistoryStore, limit: int = 10) -> list[dict[str, str]]:
+    relevant = [entry for entry in store.entries if str(entry.get("slot", "")).strip() == "evening"]
+    sliced = relevant[-limit:]
+    print(f"[EVENING UNIQUE LOAD] history_count={len(sliced)}")
+    results: list[dict[str, str]] = []
+    for entry in sliced:
+        results.append(
+            {
+                "hook": str(entry.get("semantic_hook", "")).strip(),
+                "topic": str(entry.get("semantic_topic", entry.get("topic", ""))).strip(),
+                "claim": str(entry.get("semantic_claim", entry.get("core_claim", ""))).strip(),
+                "structure": str(entry.get("semantic_structure", entry.get("semantic_pattern", ""))).strip(),
+                "takeaway": str(entry.get("semantic_takeaway", entry.get("action_takeaway", ""))).strip(),
+            }
+        )
+    return results
+
+
+def evening_duplicate_check(
+    text: str,
+    store: HistoryStore,
+    *,
+    recent_limit: int = 10,
+) -> EveningDuplicateCheckResult:
+    candidate = semantic_signature(text)
+    relevant_entries = [entry for entry in store.entries if str(entry.get("slot", "")).strip() == "evening"]
+    relevant_entries = relevant_entries[-recent_limit:]
+    print(f"[EVENING UNIQUE LOAD] history_count={len(relevant_entries)}")
+    for entry in reversed(relevant_entries):
+        entry_hook = str(entry.get("semantic_hook", "")).strip()
+        entry_topic = str(entry.get("semantic_topic", entry.get("topic", ""))).strip()
+        entry_claim = str(entry.get("semantic_claim", entry.get("core_claim", ""))).strip()
+        entry_structure = str(entry.get("semantic_structure", entry.get("semantic_pattern", ""))).strip()
+        entry_takeaway = str(entry.get("semantic_takeaway", entry.get("action_takeaway", ""))).strip()
+        hook_dup = _token_overlap_score(candidate.hook, entry_hook) >= 0.76
+        topic_dup = _token_overlap_score(candidate.topic, entry_topic) >= 0.72
+        claim_dup = _token_overlap_score(candidate.claim, entry_claim) >= 0.72
+        structure_dup = bool(candidate.structure and entry_structure and candidate.structure == entry_structure)
+        takeaway_dup = _token_overlap_score(candidate.takeaway, entry_takeaway) >= 0.72
+        print(f"[EVENING HOOK CHECK] candidate={candidate.hook[:60]} duplicate={'yes' if hook_dup else 'no'}")
+        print(
+            f"[EVENING STRUCTURE CHECK] candidate={candidate.structure} duplicate={'yes' if structure_dup else 'no'}"
+        )
+        print(
+            "[EVENING SEMANTIC CHECK] "
+            f"topic={candidate.topic[:50]} claim={candidate.claim[:50]} "
+            f"duplicate={'yes' if (topic_dup or claim_dup) else 'no'}"
+        )
+        if hook_dup:
+            return EveningDuplicateCheckResult(True, "hook_duplicate", candidate, entry)
+        if claim_dup:
+            return EveningDuplicateCheckResult(True, "claim_duplicate", candidate, entry)
+        if topic_dup:
+            return EveningDuplicateCheckResult(True, "semantic_duplicate", candidate, entry)
+        if structure_dup and (claim_dup or takeaway_dup or topic_dup):
+            return EveningDuplicateCheckResult(True, "structure_duplicate", candidate, entry)
+        if structure_dup and takeaway_dup:
+            return EveningDuplicateCheckResult(True, "structure_duplicate", candidate, entry)
+    return EveningDuplicateCheckResult(False, "", candidate, None)
 
 
 def load_memory(path: str) -> MemoryStore:
