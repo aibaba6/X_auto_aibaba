@@ -4,11 +4,11 @@ from datetime import timedelta
 from pathlib import Path
 
 from .collectors import fetch_rss_items, filter_blocked
-from .llm import build_noon_news_post
+from .llm import build_noon_news_candidates
 from .queue_store import load_queue_items, save_queue_items
 from .schedule_utils import now_local, parse_scheduled_datetime
 from .settings import AppConfig
-from .uniqueness import is_duplicate, load_memory, register_text, save_memory
+from .uniqueness import duplicate_check, load_history, load_memory, register_text, save_memory, strict_fingerprint
 
 def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False) -> int:
     path = Path(queue_path)
@@ -27,6 +27,12 @@ def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False
     now = now_local(config)
     changed = 0
     memory = load_memory(config.uniqueness_memory_path)
+    history = load_history(config.post_history_path)
+    recent_noon_posts = [
+        str(entry.get("text", "")).strip()
+        for entry in reversed(history.entries)
+        if str(entry.get("slot", "")).strip() == "noon" and str(entry.get("text", "")).strip()
+    ][:8]
     source_items = fetch_rss_items(config.rss_feeds, max_items=config.max_input_items)
     source_items = filter_blocked(source_items, config.blocked_keywords)
     if not source_items:
@@ -51,21 +57,37 @@ def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False
             continue
 
         subset = source_items[: min(5, len(source_items))]
-        draft = build_noon_news_post(
+        drafts = build_noon_news_candidates(
             model=config.model,
             items=subset,
             tone=config.tone,
             audience=config.audience,
             prediction_horizon=config.prediction_horizon,
             weekday_theme=config.weekly_themes.get(now.strftime("%A").lower(), "通常テーマ"),
+            recent_self_posts=recent_noon_posts,
+            max_candidates=4,
         )
-        if not draft:
+        if not drafts:
             print(f"[noon-refresh] draft build failed for {schedule_at}")
             continue
 
-        text = draft.text
-        if is_duplicate(text, memory):
-            print(f"[noon-refresh] duplicate skipped schedule={schedule_at}")
+        text = ""
+        reason = ""
+        for attempt, draft in enumerate(drafts, start=1):
+            print(f"[UNIQUE RETRY] attempt={attempt}")
+            result = duplicate_check(draft.text, memory)
+            if result.strict_duplicate:
+                print("[UNIQUE REJECT] reason=strict_duplicate")
+                continue
+            if result.loose_duplicate:
+                print("[UNIQUE REJECT] reason=loose_duplicate")
+                continue
+            text = draft.text
+            reason = draft.reason or "noon-news"
+            print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(text)}")
+            break
+        if not text:
+            print(f"[UNIQUE HOLD] reason=no_unique_candidate schedule={schedule_at}")
             continue
         item["text"] = text
         item["source_tweet_id"] = ""
@@ -77,7 +99,7 @@ def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False
         print(
             "[noon-refresh] updated "
             f"schedule={schedule_at} "
-            f"reason={draft.reason or 'noon-news'}"
+            f"reason={reason}"
         )
 
     if changed and not dry_run:

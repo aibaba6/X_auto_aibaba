@@ -68,13 +68,15 @@ from src.x_autopost_tool.text_normalize import cleanup_post_linebreaks
 from src.x_autopost_tool.uniqueness import (
     MemoryStore,
     append_history,
+    duplicate_check,
     history_fingerprints,
-    is_duplicate,
+    loose_fingerprint,
     load_history,
     load_memory,
     register_text,
     save_history,
     save_memory,
+    strict_fingerprint,
 )
 
 app = Flask(__name__, static_folder=str(UI_DIR), static_url_path="")
@@ -357,13 +359,38 @@ def _rotation_start(seed: int, length: int) -> int:
     return seed % length
 
 
-def _is_used_before(text: str, memory: MemoryStore, seen_fingerprints: set[str]) -> bool:
-    from src.x_autopost_tool.uniqueness import fingerprint
+def _seen_keys(text: str) -> set[str]:
+    value = (text or "").strip()
+    if not value:
+        return set()
+    return {
+        f"strict:{strict_fingerprint(value)}",
+        f"loose:{loose_fingerprint(value)}",
+    }
 
+
+def _remember_seen(text: str, seen_fingerprints: set[str]) -> None:
+    seen_fingerprints.update(_seen_keys(text))
+
+
+def _is_used_before(text: str, memory: MemoryStore, seen_fingerprints: set[str]) -> bool:
     value = (text or "").strip()
     if not value:
         return False
-    return is_duplicate(value, memory) or fingerprint(value) in seen_fingerprints
+    result = duplicate_check(value, memory)
+    if result.strict_duplicate:
+        print("[UNIQUE REJECT] reason=strict_duplicate")
+        return True
+    if result.loose_duplicate:
+        print("[UNIQUE REJECT] reason=loose_duplicate")
+        return True
+    if f"strict:{result.strict_fingerprint}" in seen_fingerprints:
+        print("[UNIQUE REJECT] reason=history_strict_duplicate")
+        return True
+    if f"loose:{result.loose_fingerprint}" in seen_fingerprints:
+        print("[UNIQUE REJECT] reason=history_loose_duplicate")
+        return True
+    return False
 
 
 MORNING_EVERGREEN_TOPICS = [
@@ -539,11 +566,9 @@ def _unique_or_fallback(
     used_fp = history_fp or set()
     candidate = text.strip()
     if candidate and not _is_used_before(candidate, memory, used_fp):
-        from src.x_autopost_tool.uniqueness import fingerprint
-
-        fp = fingerprint(candidate)
-        if fp not in local_fp:
-            local_fp.add(fp)
+        if not (_seen_keys(candidate) & local_fp):
+            _remember_seen(candidate, local_fp)
+            print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
             return candidate
 
     if slot == "morning":
@@ -564,9 +589,11 @@ def _unique_or_fallback(
                 if not _is_used_before(alt, memory, used_fp):
                     candidate = alt
                     break
-    from src.x_autopost_tool.uniqueness import fingerprint
-
-    local_fp.add(fingerprint(candidate))
+    if _is_used_before(candidate, memory, used_fp) or (_seen_keys(candidate) & local_fp):
+        print(f"[UNIQUE HOLD] reason=no_unique_candidate slot={slot}")
+        return ""
+    _remember_seen(candidate, local_fp)
+    print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
     return candidate
 
 
@@ -989,13 +1016,33 @@ def api_plan_preview():
     config = load_config(str(CONFIG_PATH))
     memory = load_memory(config.uniqueness_memory_path)
     history = load_history(config.post_history_path)
-    posted_morning_fp = history_fingerprints(history, slot="morning")
-    posted_noon_fp = history_fingerprints(history, slot="noon")
-    posted_evening_fp = history_fingerprints(history, slot="evening")
+    posted_morning_fp = {f"strict:{fp}" for fp in history_fingerprints(history, slot="morning", mode="strict")}
+    posted_morning_fp.update(f"loose:{fp}" for fp in history_fingerprints(history, slot="morning", mode="loose"))
+    posted_noon_fp = {f"strict:{fp}" for fp in history_fingerprints(history, slot="noon", mode="strict")}
+    posted_noon_fp.update(f"loose:{fp}" for fp in history_fingerprints(history, slot="noon", mode="loose"))
+    posted_evening_fp = {f"strict:{fp}" for fp in history_fingerprints(history, slot="evening", mode="strict")}
+    posted_evening_fp.update(f"loose:{fp}" for fp in history_fingerprints(history, slot="evening", mode="loose"))
     total_days = _days_from_unit(unit, count)
     slots = config.required_daily_slots or ["morning", "noon", "evening"]
     items = fetch_rss_items(config.rss_feeds, max_items=config.max_input_items)
     items = filter_blocked(items, config.blocked_keywords)
+    recent_posts_by_slot = {
+        "morning": [
+            str(entry.get("text", "")).strip()
+            for entry in reversed(history.entries)
+            if str(entry.get("slot", "")).strip() == "morning" and str(entry.get("text", "")).strip()
+        ][:8],
+        "noon": [
+            str(entry.get("text", "")).strip()
+            for entry in reversed(history.entries)
+            if str(entry.get("slot", "")).strip() == "noon" and str(entry.get("text", "")).strip()
+        ][:8],
+        "evening": [
+            str(entry.get("text", "")).strip()
+            for entry in reversed(history.entries)
+            if str(entry.get("slot", "")).strip() == "evening" and str(entry.get("text", "")).strip()
+        ][:8],
+    }
 
     plan = []
     local_fp: set[str] = set()
@@ -1022,14 +1069,13 @@ def api_plan_preview():
                 morning_seed = d.toordinal() * 11 + i + generation_seed
                 morning_variant = (generation_nonce + i) % 3
                 morning_order = _shuffled_indices(len(MORNING_EVERGREEN_TOPICS), morning_seed)
-                for order_idx in morning_order:
+                for attempt, order_idx in enumerate(morning_order, start=1):
+                    print(f"[UNIQUE RETRY] attempt={attempt}")
                     candidate = _morning_evergreen_post(order_idx, variant=morning_variant)
                     if not _is_used_before(candidate, memory, posted_morning_fp):
-                        from src.x_autopost_tool.uniqueness import fingerprint
-
-                        fp = fingerprint(candidate)
-                        if fp not in local_fp:
-                            local_fp.add(fp)
+                        if not (_seen_keys(candidate) & local_fp):
+                            _remember_seen(candidate, local_fp)
+                            print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
                             picked = candidate
                             break
                 if not picked:
@@ -1052,14 +1098,13 @@ def api_plan_preview():
                 evening_seed = d.toordinal() * 17 + i + generation_seed
                 evening_variant = (generation_nonce + i + 1) % 3
                 evening_order = _shuffled_indices(len(EVENING_ARUARU_TOPICS), evening_seed)
-                for order_idx in evening_order:
+                for attempt, order_idx in enumerate(evening_order, start=1):
+                    print(f"[UNIQUE RETRY] attempt={attempt}")
                     candidate = _evening_aruaru_post(order_idx, variant=evening_variant)
                     if not _is_used_before(candidate, memory, posted_evening_fp):
-                        from src.x_autopost_tool.uniqueness import fingerprint
-
-                        fp = fingerprint(candidate)
-                        if fp not in local_fp:
-                            local_fp.add(fp)
+                        if not (_seen_keys(candidate) & local_fp):
+                            _remember_seen(candidate, local_fp)
+                            print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
                             picked = candidate
                             break
                 if not picked:
@@ -1083,6 +1128,7 @@ def api_plan_preview():
                 text = ""
                 if items and os.getenv("OPENAI_API_KEY"):
                     for attempt in range(4):
+                        print(f"[UNIQUE RETRY] attempt={attempt + 1}")
                         subset = _rotated_items(items, seed=(i * 7 + attempt * 3 + generation_seed), take=8)
                         try:
                             drafts = build_post_drafts(
@@ -1101,17 +1147,16 @@ def api_plan_preview():
                                 slot_max_chars=slot_max_chars,
                                 max_posts=3,
                                 knowledge_snippets=slot_pdf_knowledge,
+                                recent_self_posts=recent_posts_by_slot.get(slot, []),
                             )
                             unique = None
                             rotation = _rotation_start(generation_nonce + i + attempt, len(drafts))
                             ordered_drafts = drafts[rotation:] + drafts[:rotation]
                             for dft in ordered_drafts:
                                 if not _is_used_before(dft.text, memory, posted_noon_fp):
-                                    from src.x_autopost_tool.uniqueness import fingerprint
-
-                                    fp = fingerprint(dft.text)
-                                    if fp not in local_fp:
-                                        local_fp.add(fp)
+                                    if not (_seen_keys(dft.text) & local_fp):
+                                        _remember_seen(dft.text, local_fp)
+                                        print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(dft.text)}")
                                         unique = dft.text
                                         break
                             if unique:
@@ -1130,6 +1175,8 @@ def api_plan_preview():
                         local_fp,
                         history_fp,
                     )
+                if not text:
+                    print(f"[UNIQUE HOLD] reason=no_unique_candidate slot={slot} date={d.isoformat()}")
 
             plan.append(
                 {

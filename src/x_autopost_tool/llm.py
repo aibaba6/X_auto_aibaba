@@ -7,6 +7,7 @@ from typing import Any
 from openai import OpenAI
 
 from .models import ContentItem, DraftPost, QuoteCandidate
+from .uniqueness import strict_fingerprint
 from .text_normalize import cleanup_post_linebreaks
 
 
@@ -254,6 +255,7 @@ def build_post_drafts(
     knowledge_snippets: list[str] | None = None,
     recent_self_posts: list[str] | None = None,
 ) -> list[DraftPost]:
+    candidate_count = max(max_posts * 4, 6)
     payload = [
         {
             "title": i.title,
@@ -279,7 +281,7 @@ PDFストック知見（参考）: {json.dumps(ksn[:4], ensure_ascii=False)}
 投稿枠: {slot_name}
 投稿枠ルール: {slot_style}
 
-以下の情報を元に、X投稿案を{max_posts}本作ってください。
+以下の情報を元に、X投稿案を{candidate_count}本作ってください。
 各投稿は日本語{slot_min_chars}-{slot_max_chars}文字、1つの具体的示唆と1つの予測を含める。
 次の4要素を自然に含めること: 事実 / 示唆 / 予測 / 行動。
 本文は自然文のみ。`事実:` や `示唆:` のようなラベルを書かないこと。
@@ -294,6 +296,8 @@ PDFストック知見（参考）: {json.dumps(ksn[:4], ensure_ascii=False)}
 語尾は「〜だ。」を避け、「です。」または体言止め（例: 〜が肝心。）をバランスよく使うこと。
 過去投稿サンプルのニュアンス・言葉遣い・改行リズムを優先して踏襲すること。
 ただし、直近の自分の投稿と同じ切り口・同じ主張・同じ言い回しは避けること。
+書き出し、論点の順序、比較の置き方、締め方、タグの組み合わせを意図的に変え、各案を明確に別物にすること。
+最近使った構成の言い換えだけで済ませないこと。同じ意味・同じ展開の再表現は禁止。
 改行で読みやすくすること（2-4段落、1段落1-2文）。
 必要に応じて箇条書きは1-3項目まで（長い箇条書きは禁止）。
 中黒（・）や短い記号で読みやすくしてよい。
@@ -316,10 +320,17 @@ JSONのみで返す: {{"posts":[{{"text":"...","reason":"..."}}]}}
     content = res.output_text
     parsed: dict[str, Any] = json.loads(content)
     posts = []
+    seen_fingerprints: set[str] = set()
     for p in parsed.get("posts", []):
         txt = normalize_x_post_text(str(p["text"]), slot_name=slot_name)
+        if not txt:
+            continue
+        fp = strict_fingerprint(txt)
+        if fp in seen_fingerprints:
+            continue
+        seen_fingerprints.add(fp)
         posts.append(DraftPost(text=txt, reason=p.get("reason", "")))
-    return posts[:max_posts]
+    return posts
 
 
 def build_quote_post(model: str, candidate: QuoteCandidate, tone: str, audience: str) -> str:
@@ -355,7 +366,7 @@ def build_quote_post(model: str, candidate: QuoteCandidate, tone: str, audience:
     return text
 
 
-def build_noon_news_post(
+def build_noon_news_candidates(
     model: str,
     items: list[ContentItem],
     tone: str,
@@ -363,7 +374,8 @@ def build_noon_news_post(
     prediction_horizon: str,
     weekday_theme: str,
     recent_self_posts: list[str] | None = None,
-) -> DraftPost | None:
+    max_candidates: int = 4,
+) -> list[DraftPost]:
     payload = [
         {
             "title": i.title,
@@ -373,7 +385,7 @@ def build_noon_news_post(
         for i in items[:5]
     ]
     if not payload:
-        return None
+        return []
 
     prompt = f"""
 対象読者: {audience}
@@ -382,7 +394,7 @@ def build_noon_news_post(
 予測レンジ: {prediction_horizon}
 直近の自分の投稿（重複回避用）: {json.dumps((recent_self_posts or [])[:6], ensure_ascii=False)}
 
-以下のニュース候補を材料に、昼枠向けのX投稿文を1本だけ作成してください。
+以下のニュース候補を材料に、昼枠向けのX投稿文を{max_candidates}本作成してください。
 - 日本語90-180文字
 - AIニュースの要点を最初の1-2文で簡潔に要約
 - その後に「これからどう効いてくるか」の予測を1文入れる
@@ -393,9 +405,11 @@ def build_noon_news_post(
 - 引用投稿前提ではなく、通常投稿として成立させる
 - 冷静で実務的、少しカジュアル
 - 同じ語尾を連続させない
+- 各案で書き出し、論点順、予測の切り口、行動提案を明確に変えること
+- 似た文面の言い換えを複数返さないこと
 - 2-4段落、必要なら短い箇条書き1-2項目
 - ハッシュタグは文末に2-3個
-- JSONのみで返す: {{"text":"...","reason":"..."}}
+- JSONのみで返す: {{"posts":[{{"text":"...","reason":"..."}}]}}
 
 ニュース候補:
 {json.dumps(payload, ensure_ascii=False)}
@@ -409,8 +423,38 @@ def build_noon_news_post(
         ],
     )
     parsed: dict[str, Any] = json.loads(res.output_text)
-    text = normalize_x_post_text(str(parsed.get("text", "")).strip(), slot_name="noon")
-    text = URL_RE.sub("", text).strip()
-    if not text:
-        return None
-    return DraftPost(text=text, reason=str(parsed.get("reason", "")).strip() or "noon-news")
+    posts: list[DraftPost] = []
+    seen_fingerprints: set[str] = set()
+    for item in parsed.get("posts", []):
+        text = normalize_x_post_text(str(item.get("text", "")).strip(), slot_name="noon")
+        text = URL_RE.sub("", text).strip()
+        if not text:
+            continue
+        fp = strict_fingerprint(text)
+        if fp in seen_fingerprints:
+            continue
+        seen_fingerprints.add(fp)
+        posts.append(DraftPost(text=text, reason=str(item.get("reason", "")).strip() or "noon-news"))
+    return posts
+
+
+def build_noon_news_post(
+    model: str,
+    items: list[ContentItem],
+    tone: str,
+    audience: str,
+    prediction_horizon: str,
+    weekday_theme: str,
+    recent_self_posts: list[str] | None = None,
+) -> DraftPost | None:
+    candidates = build_noon_news_candidates(
+        model=model,
+        items=items,
+        tone=tone,
+        audience=audience,
+        prediction_horizon=prediction_horizon,
+        weekday_theme=weekday_theme,
+        recent_self_posts=recent_self_posts,
+        max_candidates=4,
+    )
+    return candidates[0] if candidates else None

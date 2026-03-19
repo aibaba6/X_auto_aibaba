@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from .collectors import fetch_rss_items, filter_blocked, rank_quote_candidates
-from .llm import build_noon_news_post, build_post_drafts, build_quote_post
+from .llm import build_noon_news_candidates, build_post_drafts, build_quote_post
 from .media_tools import generate_image_with_freepik_mystic, generate_image_with_nanobanana, generate_image_with_nanobanana_pro_api
 from .models import ContentItem, DraftPost
 from .pdf_knowledge import get_pdf_knowledge_snippets
@@ -13,7 +13,18 @@ from .queue_store import load_queue_items, queue_sync_enabled, save_queue_items
 from .schedule_utils import now_local, parse_scheduled_datetime
 from .rules import filter_quote_candidates, score_quote_candidate, validate_post_draft
 from .settings import AppConfig
-from .uniqueness import append_history, fingerprint, history_fingerprints, is_duplicate, load_history, load_memory, register_text, save_history, save_memory
+from .uniqueness import (
+    append_history,
+    duplicate_check,
+    history_fingerprints,
+    load_history,
+    load_memory,
+    loose_fingerprint,
+    register_text,
+    save_history,
+    save_memory,
+    strict_fingerprint,
+)
 from .x_client import XClient
 
 
@@ -41,27 +52,45 @@ def _resolve_slot(now: datetime, forced_slot: str | None) -> str:
     return "evening"
 
 
-def _fingerprints(texts: list[str]) -> set[str]:
+def _fingerprints(texts: list[str], mode: str = "strict") -> set[str]:
     out: set[str] = set()
     for text in texts:
         value = (text or "").strip()
         if value:
-            out.add(fingerprint(value))
+            out.add(loose_fingerprint(value) if mode == "loose" else strict_fingerprint(value))
     return out
 
 
-def _is_recent_duplicate(text: str, recent_fingerprints: set[str]) -> bool:
+def _is_duplicate_candidate(
+    text: str,
+    memory,
+    *,
+    recent_strict: set[str],
+    recent_loose: set[str],
+    posted_strict: set[str] | None = None,
+    posted_loose: set[str] | None = None,
+    check_posted_history: bool = True,
+) -> bool:
     value = (text or "").strip()
     if not value:
         return False
-    return fingerprint(value) in recent_fingerprints
-
-
-def _is_posted_before(text: str, posted_fingerprints: set[str]) -> bool:
-    value = (text or "").strip()
-    if not value:
-        return False
-    return fingerprint(value) in posted_fingerprints
+    result = duplicate_check(value, memory)
+    if result.strict_duplicate:
+        print("[UNIQUE REJECT] reason=strict_duplicate")
+        return True
+    if result.loose_duplicate:
+        print("[UNIQUE REJECT] reason=loose_duplicate")
+        return True
+    if result.strict_fingerprint in recent_strict or result.loose_fingerprint in recent_loose:
+        print("[UNIQUE REJECT] reason=recent_duplicate")
+        return True
+    if check_posted_history and posted_strict is not None and result.strict_fingerprint in posted_strict:
+        print("[UNIQUE REJECT] reason=posted_strict_duplicate")
+        return True
+    if check_posted_history and posted_loose is not None and result.loose_fingerprint in posted_loose:
+        print("[UNIQUE REJECT] reason=posted_loose_duplicate")
+        return True
+    return False
 
 
 def _fallback_draft(item: ContentItem, slot: str, horizon: str) -> DraftPost:
@@ -297,10 +326,15 @@ def _post_due_queue_item(
     text = str(item.get("text", "")).strip()
     refresh_mode = str(item.get("refresh_mode", "")).strip()
     if not text and refresh_mode == "jit_noon" and resolved_slot == "noon":
+        history = load_history(config.post_history_path)
+        posted_slot_fingerprints = history_fingerprints(history, slot=resolved_slot, mode="strict")
+        posted_slot_loose_fingerprints = history_fingerprints(history, slot=resolved_slot, mode="loose")
+        recent_strict = _fingerprints(recent_self_posts or [], mode="strict")
+        recent_loose = _fingerprints(recent_self_posts or [], mode="loose")
         source_items = fetch_rss_items(config.rss_feeds, max_items=config.max_input_items)
         source_items = filter_blocked(source_items, config.blocked_keywords)
         weekday_theme = config.weekly_themes.get(_weekday_key(now), "通常テーマ")
-        draft = build_noon_news_post(
+        drafts = build_noon_news_candidates(
             model=config.model,
             items=source_items[: min(5, len(source_items))],
             tone=config.tone,
@@ -308,15 +342,33 @@ def _post_due_queue_item(
             prediction_horizon=config.prediction_horizon,
             weekday_theme=weekday_theme,
             recent_self_posts=recent_self_posts,
+            max_candidates=4,
         )
-        if draft:
-            text = draft.text
+        picked = None
+        for attempt, draft in enumerate(drafts, start=1):
+            print(f"[UNIQUE RETRY] attempt={attempt}")
+            if _is_duplicate_candidate(
+                draft.text,
+                memory,
+                recent_strict=recent_strict,
+                recent_loose=recent_loose,
+                posted_strict=posted_slot_fingerprints,
+                posted_loose=posted_slot_loose_fingerprints,
+            ):
+                continue
+            picked = draft
+            print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(draft.text)}")
+            break
+        if picked:
+            text = picked.text
             item["text"] = text
             item["last_refreshed_at"] = now.replace(microsecond=0).isoformat()
             save_queue_items(queue_path, queue)
             print(
-                f"[QUEUE REFRESH] id={item_id} slot=noon schedule_at={item.get('schedule_at', '')} reason={draft.reason}"
+                f"[QUEUE REFRESH] id={item_id} slot=noon schedule_at={item.get('schedule_at', '')} reason={picked.reason}"
             )
+        else:
+            print(f"[UNIQUE HOLD] reason=no_unique_candidate slot=noon id={item_id}")
     if not text:
         print(
             "[QUEUE HOLD] "
@@ -390,12 +442,14 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     print(f"[slot] {resolved_slot}: {slot_style}")
     memory = load_memory(config.uniqueness_memory_path)
     history = load_history(config.post_history_path)
-    posted_slot_fingerprints = history_fingerprints(history, slot=resolved_slot)
+    posted_slot_fingerprints = history_fingerprints(history, slot=resolved_slot, mode="strict")
+    posted_slot_loose_fingerprints = history_fingerprints(history, slot=resolved_slot, mode="loose")
     memory_changed = False
     history_changed = False
     x = XClient()
     recent_self_posts = x.recent_self_posts(limit=12)
-    recent_post_fingerprints = _fingerprints(recent_self_posts)
+    recent_post_fingerprints = _fingerprints(recent_self_posts, mode="strict")
+    recent_post_loose_fingerprints = _fingerprints(recent_self_posts, mode="loose")
     print(f"[RECENT POSTS] count={len(recent_self_posts)}")
 
     queue_result = _post_due_queue_item(x, config, resolved_slot, now, memory, queue_path, recent_self_posts=recent_self_posts)
@@ -422,7 +476,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
 
     if resolved_slot == "noon" and slot_latest_share_mode:
         print("[2/5] 昼枠: AIニュース要約投稿を生成")
-        noon_draft = build_noon_news_post(
+        noon_candidates = build_noon_news_candidates(
             model=config.model,
             items=items[: min(5, len(items))],
             tone=config.tone,
@@ -430,33 +484,47 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             prediction_horizon=config.prediction_horizon,
             weekday_theme=weekday_theme,
             recent_self_posts=recent_self_posts,
+            max_candidates=max(4, slot_posts_per_run * 3),
         )
-        if noon_draft and not (
-            is_duplicate(noon_draft.text, memory)
-            or _is_recent_duplicate(noon_draft.text, recent_post_fingerprints)
-            or _is_posted_before(noon_draft.text, posted_slot_fingerprints)
-        ):
+        picked_noon = None
+        for attempt, noon_draft in enumerate(noon_candidates, start=1):
+            print(f"[UNIQUE RETRY] attempt={attempt}")
+            if _is_duplicate_candidate(
+                noon_draft.text,
+                memory,
+                recent_strict=recent_post_fingerprints,
+                recent_loose=recent_post_loose_fingerprints,
+                posted_strict=posted_slot_fingerprints,
+                posted_loose=posted_slot_loose_fingerprints,
+            ):
+                continue
+            picked_noon = noon_draft
+            print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(noon_draft.text)}")
+            break
+        if picked_noon:
             if config.dry_run:
-                print(f"[DRY-RUN NOON NEWS] {noon_draft.text}")
+                print(f"[DRY-RUN NOON NEWS] {picked_noon.text}")
                 return
             else:
-                tweet_id = _safe_create_post(x, noon_draft.text, label="main-post-noon-news")
+                tweet_id = _safe_create_post(x, picked_noon.text, label="main-post-noon-news")
                 if tweet_id:
-                    register_text(noon_draft.text, memory)
+                    register_text(picked_noon.text, memory)
                     save_memory(memory)
                     append_history(
-                        noon_draft.text,
+                        picked_noon.text,
                         history,
                         slot="noon",
                         source="noon-news",
                         tweet_id=tweet_id,
                         posted_at=now.isoformat(),
                     )
-                    posted_slot_fingerprints.add(fingerprint(noon_draft.text))
+                    posted_slot_fingerprints.add(strict_fingerprint(picked_noon.text))
+                    posted_slot_loose_fingerprints.add(loose_fingerprint(picked_noon.text))
                     save_history(history)
                     print(f"noon news posted: {tweet_id}")
                     return
-        print("[NOON FALLBACK] 昼枠専用生成を通常投稿生成へフォールバック")
+        print("[UNIQUE HOLD] reason=no_unique_candidate slot=noon")
+        return
 
     print("[2/5] 投稿案生成")
     drafts = build_post_drafts(
@@ -482,41 +550,26 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         drafts = [_fallback_draft(items[0], resolved_slot, config.prediction_horizon)]
 
     passed_drafts = []
-    for d in drafts:
+    for attempt, d in enumerate(drafts, start=1):
+        print(f"[UNIQUE RETRY] attempt={attempt}")
         ok, reasons = validate_post_draft(d, config, min_chars=slot_min_chars, max_chars=slot_max_chars)
         if ok:
-            if (
-                is_duplicate(d.text, memory)
-                or _is_recent_duplicate(d.text, recent_post_fingerprints)
-                or (resolved_slot in {"morning", "noon"} and _is_posted_before(d.text, posted_slot_fingerprints))
+            if _is_duplicate_candidate(
+                d.text,
+                memory,
+                recent_strict=recent_post_fingerprints,
+                recent_loose=recent_post_loose_fingerprints,
+                posted_strict=posted_slot_fingerprints,
+                posted_loose=posted_slot_loose_fingerprints,
+                check_posted_history=True,
             ):
-                print("[DROP DRAFT] 重複投稿")
                 continue
+            print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(d.text)}")
             passed_drafts.append(d)
         else:
             print(f"[DROP DRAFT] {','.join(reasons)}")
-    if not passed_drafts and drafts and config.force_post_if_no_passed:
-        non_duplicate_forced = [
-            d
-            for d in drafts
-            if not is_duplicate(d.text, memory)
-            and not _is_recent_duplicate(d.text, recent_post_fingerprints)
-            and not (resolved_slot in {"morning", "noon"} and _is_posted_before(d.text, posted_slot_fingerprints))
-        ]
-        if non_duplicate_forced:
-            print("[FORCE POST] 品質ゲート通過案がないため、未使用の先頭案を採用")
-            passed_drafts = [non_duplicate_forced[0]]
-        else:
-            for item in items:
-                alt = _fallback_draft(item, resolved_slot, config.prediction_horizon)
-                if not is_duplicate(alt.text, memory) and not _is_recent_duplicate(
-                    alt.text, recent_post_fingerprints
-                ) and not (resolved_slot in {"morning", "noon"} and _is_posted_before(alt.text, posted_slot_fingerprints)):
-                    print("[FORCE POST] 生成案が重複のため、RSSベースの代替案を採用")
-                    passed_drafts = [alt]
-                    break
     if not passed_drafts:
-        print("[SKIP POST] 投稿可能な新規案がありません")
+        print(f"[UNIQUE HOLD] reason=no_unique_candidate slot={resolved_slot}")
         return
 
     print("[3/5] 通常投稿")
@@ -580,7 +633,8 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             tweet_id=tweet_id,
             posted_at=now.isoformat(),
         )
-        posted_slot_fingerprints.add(fingerprint(d.text))
+        posted_slot_fingerprints.add(strict_fingerprint(d.text))
+        posted_slot_loose_fingerprints.add(loose_fingerprint(d.text))
         history_changed = True
         print(f"posted: {tweet_id}")
 
@@ -613,7 +667,13 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         if posted_quotes >= config.max_quote_posts_per_run:
             break
         quote_text = build_quote_post(config.model, c, tone=config.tone, audience=config.audience)
-        if is_duplicate(quote_text, memory) or _is_recent_duplicate(quote_text, recent_post_fingerprints):
+        if _is_duplicate_candidate(
+            quote_text,
+            memory,
+            recent_strict=recent_post_fingerprints,
+            recent_loose=recent_post_loose_fingerprints,
+            check_posted_history=False,
+        ):
             print(f"[SKIP QUOTE] 重複投稿 target={c.tweet_id}")
             continue
         if config.dry_run:
