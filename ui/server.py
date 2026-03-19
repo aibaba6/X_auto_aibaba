@@ -389,6 +389,25 @@ def _remember_seen(text: str, seen_fingerprints: set[str]) -> None:
     seen_fingerprints.update(_seen_keys(text))
 
 
+def _planner_seen_keys(history, slot: str, queue_items: list[dict] | None = None) -> set[str]:
+    seen: set[str] = set()
+    for entry in history.entries:
+        if str(entry.get("slot", "")).strip() != slot:
+            continue
+        text = str(entry.get("text", "")).strip()
+        if text:
+            seen.update(_seen_keys(text))
+    for item in queue_items or []:
+        if str(item.get("slot", "")).strip() != slot:
+            continue
+        if bool(item.get("posted", False)):
+            continue
+        text = str(item.get("text", "")).strip()
+        if text:
+            seen.update(_seen_keys(text))
+    return seen
+
+
 def _is_used_before(
     text: str,
     memory: MemoryStore,
@@ -401,6 +420,7 @@ def _is_used_before(
     if not value:
         return False
     result = duplicate_check(value, memory)
+    semantic = semantic_signature(value)
     print(
         "[HISTORY CHECK] "
         f"strict_dup={'yes' if result.strict_duplicate else 'no'} "
@@ -412,11 +432,18 @@ def _is_used_before(
     if result.loose_duplicate:
         print("[UNIQUE REJECT] reason=loose_duplicate")
         return True
-    if f"strict:{result.strict_fingerprint}" in seen_fingerprints:
-        print("[UNIQUE REJECT] reason=history_strict_duplicate")
-        return True
-    if f"loose:{result.loose_fingerprint}" in seen_fingerprints:
-        print("[UNIQUE REJECT] reason=history_loose_duplicate")
+    seen_key_map = {
+        f"strict:{result.strict_fingerprint}": "history_strict_duplicate",
+        f"loose:{result.loose_fingerprint}": "history_loose_duplicate",
+        f"hook:{semantic.hook_key}": "history_hook_duplicate",
+        f"topic:{semantic.topic_key}": "history_topic_duplicate",
+        f"claim:{semantic.claim_key}": "history_claim_duplicate",
+        f"structure:{semantic.structure}": "history_structure_duplicate",
+        f"takeaway:{semantic.takeaway_key}": "history_takeaway_duplicate",
+    }
+    matched = [reason for key, reason in seen_key_map.items() if key in seen_fingerprints]
+    if matched:
+        print(f"[UNIQUE REJECT] reason={matched[0]}")
         return True
     if history is not None:
         if slot == "evening" and generation_level == "strict":
@@ -654,13 +681,22 @@ def _unique_or_fallback(
             return candidate
 
     if slot == "morning":
-        candidate = (
-            f"🔍 デザイン基礎の振り返り（{d.isoformat()}）\n\n"
-            "・情報を足す前に、要素の役割を整理する\n"
-            "・迷ったら余白とタイポの一貫性を先に確認する\n\n"
-            "まずは直近の画面を1つだけ、目的ベースで再配置して比較。\n"
-            "#デザイン基礎 #UIデザイン #デザイン思考"
-        )
+        candidate = ""
+        for topic_idx in range(len(MORNING_EVERGREEN_TOPICS)):
+            for variant in range(3):
+                alt = normalize_x_post_text(_morning_evergreen_post(topic_idx, variant), slot_name="morning")
+                if _is_used_before(alt, memory, used_fp, history=history, slot=slot) or (_seen_keys(alt) & local_fp):
+                    continue
+                candidate = alt
+                break
+            if candidate:
+                break
+        if not candidate:
+            candidate = (
+                f"デザインの見直しは、足す前に役割を分けるほうが整います。\n"
+                f"{weekday_theme}は、主役と脇役の差を1つだけ見直す。\n\n"
+                "#デザイン基礎\n#UIデザイン\n#情報設計"
+            )
     elif slot == "noon":
         candidate = _jit_noon_placeholder(30)
     else:
@@ -1108,13 +1144,11 @@ def api_plan_preview():
     config = load_config(str(CONFIG_PATH))
     memory = load_memory(config.uniqueness_memory_path)
     history = load_history(config.post_history_path)
+    queue_items = _load_queue()
     print(f"[HISTORY LOAD] count={len(history.entries)}")
-    posted_morning_fp = {f"strict:{fp}" for fp in history_fingerprints(history, slot="morning", mode="strict")}
-    posted_morning_fp.update(f"loose:{fp}" for fp in history_fingerprints(history, slot="morning", mode="loose"))
-    posted_noon_fp = {f"strict:{fp}" for fp in history_fingerprints(history, slot="noon", mode="strict")}
-    posted_noon_fp.update(f"loose:{fp}" for fp in history_fingerprints(history, slot="noon", mode="loose"))
-    posted_evening_fp = {f"strict:{fp}" for fp in history_fingerprints(history, slot="evening", mode="strict")}
-    posted_evening_fp.update(f"loose:{fp}" for fp in history_fingerprints(history, slot="evening", mode="loose"))
+    posted_morning_fp = _planner_seen_keys(history, "morning", queue_items)
+    posted_noon_fp = _planner_seen_keys(history, "noon", queue_items)
+    posted_evening_fp = _planner_seen_keys(history, "evening", queue_items)
     recent_content_types_by_slot = {
         "morning": history_pattern_types(history, slot="morning", limit=6),
         "noon": history_content_types(history, slot="noon", limit=6),
