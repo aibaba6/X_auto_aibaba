@@ -10,6 +10,7 @@ from .llm import build_noon_news_candidates, build_post_drafts, build_quote_post
 from .media_tools import generate_image_with_freepik_mystic, generate_image_with_nanobanana, generate_image_with_nanobanana_pro_api
 from .models import ContentItem, DraftPost
 from .pdf_knowledge import get_pdf_knowledge_snippets
+from .quote_format import validate_quote_post
 from .queue_store import load_queue_items, queue_sync_enabled, save_queue_items
 from .schedule_utils import now_local, parse_scheduled_datetime
 from .rules import filter_quote_candidates, score_quote_candidate, validate_post_draft
@@ -206,6 +207,23 @@ def _build_retry_batches(
         ]
     base_item = items[0] if items else ContentItem(source="", title="AI運用の設計", summary="", url="")
     return [("forced", [_fallback_draft(base_item, slot, horizon), _short_fallback_draft(slot)])]
+
+
+def _validate_quote_candidate(draft: DraftPost) -> bool:
+    if draft.content_type != "quote":
+        return True
+    ok, checks = validate_quote_post(draft.text)
+    print(
+        "[QUOTE VALIDATE] "
+        f"english={'yes' if checks['english'] else 'no'} "
+        f"translation={'yes' if checks['translation'] else 'no'} "
+        f"author={'yes' if checks['author'] else 'no'} "
+        f"spacing_ok={'yes' if checks['spacing_ok'] else 'no'}"
+    )
+    print(f"[QUOTE FORMAT] ok={'yes' if ok else 'no'}")
+    if not ok:
+        print("[QUOTE REPAIR] action=reject_candidate")
+    return ok
 
 
 def _engagement_score(c) -> int:
@@ -664,6 +682,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         return
 
     print("[2/5] 投稿案生成")
+    print(f"[GEN START] slot={resolved_slot} type=auto")
     passed_drafts = []
     if resolved_slot in {"morning", "evening"}:
         retry_batches = _build_retry_batches(
@@ -702,6 +721,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
 
     for step, (level, drafts) in enumerate(retry_batches, start=1):
         print(f"[RETRY LEVEL] step={step}")
+        print(f"[GEN CANDIDATES] count={len(drafts)}")
         if not drafts and items:
             drafts = [_fallback_draft(items[0], resolved_slot, config.prediction_horizon)]
         for attempt, d in enumerate(drafts, start=1):
@@ -712,7 +732,11 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                 continue
             ok, reasons = validate_post_draft(d, config, min_chars=slot_min_chars, max_chars=slot_max_chars)
             if not ok:
+                print(f"[GEN REJECT] reason={','.join(reasons)}")
                 print(f"[DROP DRAFT] {','.join(reasons)}")
+                continue
+            if not _validate_quote_candidate(d):
+                print("[GEN REJECT] reason=quote_format_invalid")
                 continue
             if _is_duplicate_candidate(
                 d.text,
@@ -757,6 +781,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         if passed_drafts:
             break
     if not passed_drafts:
+        print(f"[NO POST GENERATED] reason=all_candidates_rejected slot={resolved_slot}")
         print(f"[UNIQUE HOLD] reason=no_unique_candidate slot={resolved_slot}")
         print(f"[SEMANTIC HOLD] reason=no_semantically_unique_candidate slot={resolved_slot}")
         if resolved_slot == "evening":
@@ -765,6 +790,9 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
 
     print("[3/5] 通常投稿")
     for i, d in enumerate(passed_drafts, start=1):
+        if not _validate_quote_candidate(d):
+            print("[GEN REJECT] reason=quote_format_invalid_before_post")
+            continue
         media_paths: list[str] | None = None
         if config.media_enabled and resolved_slot == "morning" and config.media_morning_generate_image:
             provider = config.media_morning_image_provider
@@ -830,6 +858,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         posted_slot_fingerprints.add(strict_fingerprint(d.text))
         posted_slot_loose_fingerprints.add(loose_fingerprint(d.text))
         history_changed = True
+        print(f"[FINAL PICK] slot={resolved_slot} type={d.content_type or resolved_slot}")
         print(f"posted: {tweet_id}")
 
     # Noon latest-share mode should either quote a fresh AI post or fall back to

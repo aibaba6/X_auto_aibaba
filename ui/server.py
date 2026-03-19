@@ -1131,6 +1131,7 @@ def api_plan_preview():
         weekday_theme = config.weekly_themes.get(weekday, "通常テーマ")
 
         for slot in slots:
+            print(f"[GEN START] slot={slot} type=planner")
             slot_profile = config.slot_profiles.get(slot, {})
             slot_style = str(slot_profile.get("style", "通常枠"))
             slot_min_chars = int(slot_profile.get("min_chars", config.min_post_chars))
@@ -1151,6 +1152,7 @@ def api_plan_preview():
                 ]
                 for level, drafts in morning_batches:
                     print(f"[GEN LEVEL] {level}")
+                    print(f"[GEN CANDIDATES] count={len(drafts)}")
                     for attempt, draft in enumerate(drafts, start=1):
                         print(f"[UNIQUE RETRY] attempt={attempt}")
                         candidate = draft.text
@@ -1212,6 +1214,7 @@ def api_plan_preview():
                 ]
                 for level, drafts in evening_batches:
                     print(f"[GEN LEVEL] {level}")
+                    print(f"[GEN CANDIDATES] count={len(drafts)}")
                     for attempt, draft in enumerate(drafts, start=1):
                         print(f"[UNIQUE RETRY] attempt={attempt}")
                         candidate = draft.text
@@ -1256,6 +1259,7 @@ def api_plan_preview():
                         history=history,
                     )
                 if not picked:
+                    print(f"[NO POST GENERATED] reason=planner_evening_fallback_empty slot={slot}")
                     print(f"[EVENING HOLD] reason=no_unique_evening_candidate date={d.isoformat()}")
                 text = picked
                 plan.append(

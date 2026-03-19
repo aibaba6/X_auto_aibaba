@@ -4,6 +4,7 @@ import random
 
 from .llm import normalize_x_post_text
 from .models import ContentItem, DraftPost
+from .quote_format import format_quote_post, validate_quote_post
 
 
 MORNING_BASIC_TOPICS = [
@@ -154,17 +155,25 @@ def build_morning_type_drafts(
                 )
                 drafts.append(_draft(text, "morning-basic", "basic", item["title"], item["action"], "一言断言型"))
             else:
-                text = _normalize(
-                    (
-                        f"\"{item['quote']}\"\n"
-                        f"（{item['translation']}）\n"
-                        f"{item['author']}\n\n"
-                        f"{item['interpretation']}\n"
-                        f"{item['action']}\n\n"
-                        f"{item['tags']}"
-                    ),
-                    slot_name="morning",
+                text = format_quote_post(
+                    item["quote"],
+                    item["translation"],
+                    item["author"],
+                    [item["interpretation"], item["action"]],
+                    item["tags"],
                 )
+                ok, checks = validate_quote_post(text)
+                print(
+                    "[QUOTE VALIDATE] "
+                    f"english={'yes' if checks['english'] else 'no'} "
+                    f"translation={'yes' if checks['translation'] else 'no'} "
+                    f"author={'yes' if checks['author'] else 'no'} "
+                    f"spacing_ok={'yes' if checks['spacing_ok'] else 'no'}"
+                )
+                print(f"[QUOTE FORMAT] ok={'yes' if ok else 'no'}")
+                if not ok:
+                    print("[QUOTE REPAIR] action=skip_broken_quote")
+                    continue
                 drafts.append(_draft(text, "morning-quote", "quote", item["author"], item["interpretation"], "引用解釈型"))
     return drafts[:max_candidates]
 
