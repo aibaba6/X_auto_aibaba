@@ -21,6 +21,7 @@ from .uniqueness import (
     evening_duplicate_check,
     history_content_types,
     history_fingerprints,
+    history_pattern_types,
     load_history,
     load_memory,
     loose_fingerprint,
@@ -86,6 +87,11 @@ def _is_duplicate_candidate(
     if not value:
         return False
     result = duplicate_check(value, memory)
+    print(
+        "[HISTORY CHECK] "
+        f"strict_dup={'yes' if result.strict_duplicate else 'no'} "
+        f"loose_dup={'yes' if result.loose_duplicate else 'no'}"
+    )
     if result.strict_duplicate:
         print("[UNIQUE REJECT] reason=strict_duplicate")
         return True
@@ -120,8 +126,8 @@ def _is_duplicate_candidate(
     return False
 
 
-def _content_type_allowed(content_type: str, recent_types: list[str], *, slot: str) -> bool:
-    normalized = (content_type or "").strip().lower()
+def _content_type_allowed(pattern_type: str, recent_types: list[str], *, slot: str) -> bool:
+    normalized = (pattern_type or "").strip().lower()
     if not normalized:
         return True
     recent = [value.strip().lower() for value in recent_types if value]
@@ -168,6 +174,7 @@ def _fallback_draft(item: ContentItem, slot: str, horizon: str) -> DraftPost:
         text=normalize_x_post_text(text, slot_name=slot),
         reason="fallback",
         content_type=content_type,
+        pattern_type=content_type,
         topic=title,
         structure="一言断言型",
     )
@@ -176,12 +183,12 @@ def _fallback_draft(item: ContentItem, slot: str, horizon: str) -> DraftPost:
 def _short_fallback_draft(slot: str) -> DraftPost:
     if slot == "morning":
         text = "迷いを減らす設計ほど、見た目より先に効きます。\n役割が重なる要素を1つ外して比較する。\n\n#デザイン基礎 #UIデザイン #実務"
-        return DraftPost(text=normalize_x_post_text(text, slot_name=slot), reason="short-fallback", content_type="basic", topic="判断を減らす設計", structure="一言断言型")
+        return DraftPost(text=normalize_x_post_text(text, slot_name=slot), reason="short-fallback", content_type="design", pattern_type="practical", topic="判断を減らす設計", structure="一言断言型")
     if slot == "evening":
         text = "進める量より、迷いを減らせた日のほうが次につながります。\n明日の自分が迷わない一言だけ残す。\n\n#デザイン実務 #制作フロー #継続改善"
-        return DraftPost(text=normalize_x_post_text(text, slot_name=slot), reason="short-fallback", content_type="daily", topic="迷いを減らす終わり方", structure="一言断言型")
+        return DraftPost(text=normalize_x_post_text(text, slot_name=slot), reason="short-fallback", content_type="design", pattern_type="insight", topic="迷いを減らす終わり方", structure="一言断言型")
     text = "機能を増やす前に、どの判断を軽くするかを見る。\n小さく試して差分を確認する。\n\n#AI #AIニュース #デザイン"
-    return DraftPost(text=normalize_x_post_text(text, slot_name=slot), reason="short-fallback", content_type="news", topic="判断を軽くするAI活用", structure="一言断言型")
+    return DraftPost(text=normalize_x_post_text(text, slot_name=slot), reason="short-fallback", content_type="news", pattern_type="news", topic="判断を軽くするAI活用", structure="一言断言型")
 
 
 def _guaranteed_slot_draft(slot: str, d: date) -> DraftPost:
@@ -194,7 +201,8 @@ def _guaranteed_slot_draft(slot: str, d: date) -> DraftPost:
         return DraftPost(
             text=normalize_x_post_text(text, slot_name="morning"),
             reason="guaranteed-fallback",
-            content_type="basic",
+            content_type="design",
+            pattern_type="timeless",
             topic="役割の重なりを減らす",
             structure="一言断言型",
         )
@@ -207,7 +215,8 @@ def _guaranteed_slot_draft(slot: str, d: date) -> DraftPost:
         return DraftPost(
             text=normalize_x_post_text(text, slot_name="evening"),
             reason="guaranteed-fallback",
-            content_type="daily",
+            content_type="design",
+            pattern_type="practical",
             topic="迷いを減らす終わり方",
             structure="一言断言型",
         )
@@ -224,16 +233,16 @@ def _build_retry_batches(
 ) -> list[tuple[str, list[DraftPost]]]:
     if slot == "morning":
         return [
-            ("strict", build_morning_type_drafts(seed=seed + history_count, max_candidates=8)),
-            ("relaxed", build_morning_type_drafts(seed=seed + history_count + 19, max_candidates=8, preferred_types=["basic", "quote"])),
+            ("strict", build_morning_type_drafts(seed=seed + history_count, max_candidates=10, items=items)),
+            ("relaxed", build_morning_type_drafts(seed=seed + history_count + 19, max_candidates=10, preferred_types=["timeless", "practical", "insight", "quote", "latest", "trend"], items=items)),
             ("forced", build_quote_fallback_drafts(seed=seed + history_count + 37, max_candidates=4) + [_short_fallback_draft("morning")]),
         ]
     if slot == "evening":
         base_item = items[0] if items else ContentItem(source="", title="制作の終わり方", summary="", url="")
         return [
-            ("strict", build_evening_type_drafts(items, seed=seed + history_count, max_candidates=10, preferred_types=["daily", "trend", "aruaru"])),
-            ("relaxed", build_evening_type_drafts(items, seed=seed + history_count + 17, max_candidates=10, preferred_types=["daily", "trend"])),
-            ("forced", build_evening_type_drafts(items, seed=seed + history_count + 31, max_candidates=8, preferred_types=["trend", "daily"]) + build_quote_fallback_drafts(seed=seed + history_count + 43, max_candidates=2) + [_fallback_draft(base_item, "evening", horizon), _short_fallback_draft("evening")]),
+            ("strict", build_evening_type_drafts(items, seed=seed + history_count, max_candidates=12, preferred_types=["practical", "insight", "latest", "trend", "timeless", "quote"])),
+            ("relaxed", build_evening_type_drafts(items, seed=seed + history_count + 17, max_candidates=12, preferred_types=["practical", "insight", "trend", "timeless", "latest", "quote"])),
+            ("forced", build_evening_type_drafts(items, seed=seed + history_count + 31, max_candidates=8, preferred_types=["trend", "practical", "insight", "quote"]) + build_quote_fallback_drafts(seed=seed + history_count + 43, max_candidates=2) + [_fallback_draft(base_item, "evening", horizon), _short_fallback_draft("evening")]),
         ]
     base_item = items[0] if items else ContentItem(source="", title="AI運用の設計", summary="", url="")
     return [("forced", [_fallback_draft(base_item, slot, horizon), _short_fallback_draft(slot)])]
@@ -562,6 +571,7 @@ def _post_due_queue_item(
         tweet_id=tweet_id,
         posted_at=now.isoformat(),
         content_type=str(item.get("content_type", "")).strip(),
+        pattern_type=str(item.get("pattern_type", item.get("content_type", ""))).strip(),
         topic=str(item.get("topic", "")).strip(),
         pattern_id=str(item.get("pattern_id", "")).strip(),
     )
@@ -592,10 +602,11 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     print(f"[slot] {resolved_slot}: {slot_style}")
     memory = load_memory(config.uniqueness_memory_path)
     history = load_history(config.post_history_path)
+    print(f"[HISTORY LOAD] count={len(history.entries)}")
     posted_slot_fingerprints = history_fingerprints(history, slot=resolved_slot, mode="strict")
     posted_slot_loose_fingerprints = history_fingerprints(history, slot=resolved_slot, mode="loose")
     recent_semantic = semantic_summaries(history, slot=resolved_slot, limit=10)
-    recent_content_types = history_content_types(history, slot=resolved_slot, limit=6)
+    recent_content_types = history_pattern_types(history, slot=resolved_slot, limit=6)
     memory_changed = False
     history_changed = False
     x = XClient()
@@ -647,6 +658,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                     tweet_id=tweet_id,
                     posted_at=now.isoformat(),
                     content_type=fallback_noon.content_type,
+                    pattern_type=fallback_noon.pattern_type,
                     topic=fallback_noon.topic,
                     pattern_id=fallback_noon.structure,
                 )
@@ -706,6 +718,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                         tweet_id=tweet_id,
                         posted_at=now.isoformat(),
                         content_type="news",
+                        pattern_type=getattr(picked_noon, "pattern_type", "news"),
                         topic=getattr(picked_noon, "topic", ""),
                         pattern_id=getattr(picked_noon, "structure", ""),
                     )
@@ -731,6 +744,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                 tweet_id=tweet_id,
                 posted_at=now.isoformat(),
                 content_type=fallback_noon.content_type,
+                pattern_type=fallback_noon.pattern_type,
                 topic=fallback_noon.topic,
                 pattern_id=fallback_noon.structure,
             )
@@ -811,7 +825,10 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                 posted_loose=posted_slot_loose_fingerprints,
                 check_posted_history=True,
             ):
+                print("[HISTORY REJECT] reason=duplicate_candidate")
                 continue
+            if d.pattern_type or d.content_type:
+                print(f"[PATTERN PICK] slot={resolved_slot} pattern={d.pattern_type or d.content_type}")
             if d.content_type:
                 print(f"[PICKED TYPE] type={d.content_type}")
             if d.topic:
@@ -824,7 +841,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                 print(f"[TREND SOURCE] {d.topic[:120]}")
             if level == "forced" and d.content_type == "quote":
                 print("[FALLBACK USED] type=quote")
-            print(f"[FINAL PICK] type={d.content_type or resolved_slot}")
+            print(f"[FINAL PICK] slot={resolved_slot} pattern={d.pattern_type or d.content_type} topic={d.topic[:80] if d.topic else '-'}")
             print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(d.text)}")
             semantic = semantic_duplicate_check(d.text, history, slot=resolved_slot)
             print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
@@ -836,7 +853,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                 )
             passed_drafts.append(d)
             if d.content_type:
-                recent_content_types.append(d.content_type)
+                recent_content_types.append(d.pattern_type or d.content_type)
             break
         if passed_drafts:
             break
@@ -918,13 +935,14 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             tweet_id=tweet_id,
             posted_at=now.isoformat(),
             content_type=d.content_type,
+            pattern_type=d.pattern_type,
             topic=d.topic,
             pattern_id=d.structure,
         )
         posted_slot_fingerprints.add(strict_fingerprint(d.text))
         posted_slot_loose_fingerprints.add(loose_fingerprint(d.text))
         history_changed = True
-        print(f"[FINAL PICK] slot={resolved_slot} type={d.content_type or resolved_slot}")
+        print(f"[FINAL PICK] slot={resolved_slot} pattern={d.pattern_type or d.content_type or resolved_slot} type={d.content_type or resolved_slot}")
         print(f"posted: {tweet_id}")
 
     # Noon latest-share mode should either quote a fresh AI post or fall back to
@@ -984,6 +1002,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             tweet_id=quote_id,
             posted_at=now.isoformat(),
             content_type="quote",
+            pattern_type="quote",
         )
         history_changed = True
         posted_quotes += 1

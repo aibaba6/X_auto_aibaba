@@ -65,7 +65,7 @@ from src.x_autopost_tool.pdf_knowledge import (
 )
 from src.x_autopost_tool.schedule_utils import format_datetime_local_input, serialize_scheduled_datetime
 from src.x_autopost_tool.settings import load_config
-from src.x_autopost_tool.text_normalize import cleanup_post_linebreaks
+from src.x_autopost_tool.text_normalize import cleanup_post_linebreaks, cleanup_post_text
 from src.x_autopost_tool.uniqueness import (
     MemoryStore,
     append_history,
@@ -73,6 +73,7 @@ from src.x_autopost_tool.uniqueness import (
     evening_duplicate_check,
     history_content_types,
     history_fingerprints,
+    history_pattern_types,
     loose_fingerprint,
     load_history,
     load_memory,
@@ -398,6 +399,11 @@ def _is_used_before(
     if not value:
         return False
     result = duplicate_check(value, memory)
+    print(
+        "[HISTORY CHECK] "
+        f"strict_dup={'yes' if result.strict_duplicate else 'no'} "
+        f"loose_dup={'yes' if result.loose_duplicate else 'no'}"
+    )
     if result.strict_duplicate:
         print("[UNIQUE REJECT] reason=strict_duplicate")
         return True
@@ -1100,6 +1106,7 @@ def api_plan_preview():
     config = load_config(str(CONFIG_PATH))
     memory = load_memory(config.uniqueness_memory_path)
     history = load_history(config.post_history_path)
+    print(f"[HISTORY LOAD] count={len(history.entries)}")
     posted_morning_fp = {f"strict:{fp}" for fp in history_fingerprints(history, slot="morning", mode="strict")}
     posted_morning_fp.update(f"loose:{fp}" for fp in history_fingerprints(history, slot="morning", mode="loose"))
     posted_noon_fp = {f"strict:{fp}" for fp in history_fingerprints(history, slot="noon", mode="strict")}
@@ -1107,9 +1114,9 @@ def api_plan_preview():
     posted_evening_fp = {f"strict:{fp}" for fp in history_fingerprints(history, slot="evening", mode="strict")}
     posted_evening_fp.update(f"loose:{fp}" for fp in history_fingerprints(history, slot="evening", mode="loose"))
     recent_content_types_by_slot = {
-        "morning": history_content_types(history, slot="morning", limit=6),
+        "morning": history_pattern_types(history, slot="morning", limit=6),
         "noon": history_content_types(history, slot="noon", limit=6),
-        "evening": history_content_types(history, slot="evening", limit=6),
+        "evening": history_pattern_types(history, slot="evening", limit=6),
     }
     total_days = _days_from_unit(unit, count)
     slots = config.required_daily_slots or ["morning", "noon", "evening"]
@@ -1164,8 +1171,8 @@ def api_plan_preview():
                 picked_draft = None
                 morning_seed = d.toordinal() * 11 + i + generation_seed
                 morning_batches = [
-                    ("strict", build_morning_type_drafts(morning_seed, max_candidates=8)),
-                    ("relaxed", build_morning_type_drafts(morning_seed + 17, max_candidates=8, preferred_types=["basic", "quote"])),
+                    ("strict", build_morning_type_drafts(morning_seed, max_candidates=10, items=items)),
+                    ("relaxed", build_morning_type_drafts(morning_seed + 17, max_candidates=10, preferred_types=["timeless", "practical", "insight", "quote", "latest", "trend"], items=items)),
                     ("forced", build_quote_fallback_drafts(morning_seed + 29, max_candidates=4)),
                 ]
                 for level, drafts in morning_batches:
@@ -1185,9 +1192,11 @@ def api_plan_preview():
                                 print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
                                 semantic = semantic_duplicate_check(candidate, history, slot="morning")
                                 print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
+                                if draft.pattern_type or draft.content_type:
+                                    print(f"[PATTERN PICK] slot=morning pattern={draft.pattern_type or draft.content_type}")
                                 if draft.content_type:
                                     print(f"[PICKED TYPE] type={draft.content_type}")
-                                    recent_content_types_by_slot["morning"].append(draft.content_type)
+                                    recent_content_types_by_slot["morning"].append(draft.pattern_type or draft.content_type)
                                 picked = candidate
                                 picked_draft = draft
                                 break
@@ -1205,7 +1214,7 @@ def api_plan_preview():
                         history=history,
                     )
                     if picked and not picked_draft:
-                        picked_draft = type("DraftLike", (), {"content_type": "basic"})()
+                        picked_draft = type("DraftLike", (), {"content_type": "design", "pattern_type": "timeless"})()
                 text = picked
                 plan.append(
                     {
@@ -1213,10 +1222,15 @@ def api_plan_preview():
                         "time": slot_time,
                         "slot": slot,
                         "theme": {
-                            "basic": "basic / デザイン基礎・応用",
-                            "quote": "quote / 偉人・デザイナーの言葉",
-                        }.get(getattr(picked_draft, "content_type", ""), "basic / デザイン基礎・応用"),
-                        "content_type": getattr(picked_draft, "content_type", "basic"),
+                            "latest": "latest / 最近のデザイン潮流",
+                            "trend": "trend / 話題をデザイン視点で解釈",
+                            "timeless": "timeless / 普遍的な設計原則",
+                            "quote": "quote / デザイナーの言葉",
+                            "practical": "practical / 実務判断",
+                            "insight": "insight / 小さな気づき",
+                        }.get(getattr(picked_draft, "pattern_type", ""), "timeless / 普遍的な設計原則"),
+                        "content_type": getattr(picked_draft, "content_type", "design"),
+                        "pattern_type": getattr(picked_draft, "pattern_type", "timeless"),
                         "text": text,
                         "refresh_mode": "",
                     }
@@ -1228,9 +1242,9 @@ def api_plan_preview():
                 picked_draft = None
                 evening_seed = d.toordinal() * 17 + i + generation_seed
                 evening_batches = [
-                    ("strict", build_evening_type_drafts(items, evening_seed, max_candidates=10, preferred_types=["daily", "trend", "aruaru"])),
-                    ("relaxed", build_evening_type_drafts(items, evening_seed + 19, max_candidates=10, preferred_types=["daily", "trend"])),
-                    ("forced", build_evening_type_drafts(items, evening_seed + 31, max_candidates=8, preferred_types=["trend", "daily"]) + build_quote_fallback_drafts(evening_seed + 43, max_candidates=2)),
+                    ("strict", build_evening_type_drafts(items, evening_seed, max_candidates=12, preferred_types=["practical", "insight", "latest", "trend", "timeless", "quote"])),
+                    ("relaxed", build_evening_type_drafts(items, evening_seed + 19, max_candidates=12, preferred_types=["practical", "insight", "trend", "timeless", "latest", "quote"])),
+                    ("forced", build_evening_type_drafts(items, evening_seed + 31, max_candidates=8, preferred_types=["trend", "practical", "insight", "quote"]) + build_quote_fallback_drafts(evening_seed + 43, max_candidates=2)),
                 ]
                 for level, drafts in evening_batches:
                     print(f"[GEN LEVEL] {level}")
@@ -1249,9 +1263,11 @@ def api_plan_preview():
                                 print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
                                 semantic = semantic_duplicate_check(candidate, history, slot="evening")
                                 print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
+                                if draft.pattern_type or draft.content_type:
+                                    print(f"[PATTERN PICK] slot=evening pattern={draft.pattern_type or draft.content_type}")
                                 if draft.content_type:
                                     print(f"[PICKED TYPE] type={draft.content_type}")
-                                    recent_content_types_by_slot["evening"].append(draft.content_type)
+                                    recent_content_types_by_slot["evening"].append(draft.pattern_type or draft.content_type)
                                 if draft.topic:
                                     print(f"[TOPIC] {draft.topic[:120]}")
                                 if draft.structure:
@@ -1279,7 +1295,7 @@ def api_plan_preview():
                         history=history,
                     )
                     if picked and not picked_draft:
-                        picked_draft = type("DraftLike", (), {"content_type": "daily"})()
+                        picked_draft = type("DraftLike", (), {"content_type": "design", "pattern_type": "practical"})()
                 if not picked:
                     print(f"[NO POST GENERATED] reason=planner_evening_fallback_empty slot={slot}")
                     print(f"[EVENING HOLD] reason=no_unique_evening_candidate date={d.isoformat()}")
@@ -1290,11 +1306,15 @@ def api_plan_preview():
                         "time": slot_time,
                         "slot": slot,
                         "theme": {
-                            "aruaru": "aruaru / あるある",
-                            "daily": "daily / 日常・実務",
-                            "trend": "trend / トレンド",
-                        }.get(getattr(picked_draft, "content_type", ""), "daily / 日常・実務"),
-                        "content_type": getattr(picked_draft, "content_type", "daily"),
+                            "latest": "latest / 最近のデザイン潮流",
+                            "trend": "trend / 話題をデザイン視点で解釈",
+                            "timeless": "timeless / 普遍的な設計原則",
+                            "quote": "quote / デザイナーの言葉",
+                            "practical": "practical / 実務判断",
+                            "insight": "insight / 小さな気づき",
+                        }.get(getattr(picked_draft, "pattern_type", ""), "practical / 実務判断"),
+                        "content_type": getattr(picked_draft, "content_type", "design"),
+                        "pattern_type": getattr(picked_draft, "pattern_type", "practical"),
                         "text": text,
                         "refresh_mode": "",
                     }
@@ -1658,7 +1678,7 @@ def api_test_post():
 
     if not text:
         return jsonify({"ok": False, "message": "投稿本文が空です。"}), 400
-    text = cleanup_post_linebreaks(text)
+    text = cleanup_post_text(text)
     if len(text) > 280:
         return jsonify({"ok": False, "message": f"文字数が280を超えています: {len(text)}"}), 400
 
@@ -1694,7 +1714,7 @@ def api_test_post():
             resp = _x_client().create_tweet(text=text, user_auth=True)
         tweet_id = str(resp.data.get("id")) if resp and resp.data else ""
         if attach_source_reply and source_url and tweet_id:
-            reply = cleanup_post_linebreaks(f"出典メモ: {source_url}")
+            reply = cleanup_post_text(f"出典メモ: {source_url}")
             _x_client().create_tweet(text=reply, in_reply_to_tweet_id=tweet_id, user_auth=True)
         me = _x_client().get_me(user_auth=True, user_fields=["username"])
         username = me.data.username if me and me.data else ""
@@ -1711,6 +1731,8 @@ def api_test_post():
             source="test-post",
             tweet_id=tweet_id,
             posted_at=datetime.now().isoformat(),
+            content_type="manual",
+            pattern_type="manual",
         )
         save_history(history)
         return jsonify({"ok": True, "tweet_id": tweet_id, "tweet_url": tweet_url, "message": "試験投稿しました。"})

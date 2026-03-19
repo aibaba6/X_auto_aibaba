@@ -6,6 +6,11 @@ import re
 HASHTAG_LINE_RE = re.compile(r"^\s*#")
 BULLET_LINE_RE = re.compile(r"^\s*(?:[-*•]|[0-9]+\.)\s+")
 URL_FRAGMENT_RE = re.compile(r"(https?://|www\.)[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]*$")
+MULTISPACE_RE = re.compile(r"[ \t\u3000]+")
+JP_INTERNAL_SPACE_RE = re.compile(r"(?<=[ぁ-んァ-ン一-龠])\s+(?=[ぁ-んァ-ン一-龠])")
+JP_PUNCT_SPACE_RE = re.compile(r"\s+(?=[、。！？：；）】」』])")
+OPEN_BRACKET_SPACE_RE = re.compile(r"(?<=[（【「『])\s+")
+LINE_EDGE_SPACE_RE = re.compile(r"[ \t]+\n|\n[ \t]+")
 
 OPENING_BRACKETS = ("(", "（", "「", "『", "【", "《", "〈", "[")
 CLOSING_PREFIXES = ("、", "。", "！", "?", "？", "!", "）", "」", "』", "】", "》", "〉", "]")
@@ -128,3 +133,25 @@ def cleanup_post_linebreaks(text: str) -> str:
         merged.append(block)
         blank_pending = False
     return "\n".join(merged).strip()
+
+
+def cleanup_post_text(text: str) -> str:
+    """
+    Normalize visible spacing without changing meaning.
+    Rules:
+    - remove needless spaces between Japanese characters
+    - remove spaces before Japanese punctuation / after opening brackets
+    - trim spaces around newlines and line ends
+    - preserve normal English word spacing
+    """
+    raw = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    value = cleanup_post_linebreaks(raw)
+    before = value
+    value = LINE_EDGE_SPACE_RE.sub("\n", value)
+    value = JP_INTERNAL_SPACE_RE.sub("", value)
+    value = JP_PUNCT_SPACE_RE.sub("", value)
+    value = OPEN_BRACKET_SPACE_RE.sub("", value)
+    value = MULTISPACE_RE.sub(" ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value).strip()
+    print(f"[TEXT CLEANUP] spacing_fix_applied={'yes' if value != before else 'no'}")
+    return value

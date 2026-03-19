@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from .text_normalize import cleanup_post_text
+
 
 JP_CHAR_RE = re.compile(r"[ぁ-んァ-ン一-龠]")
 TAG_RE = re.compile(r"#\S+")
@@ -64,7 +66,7 @@ def format_quote_post(
         parts.extend([""] + tag_lines)
     text = "\n".join(parts)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return text
+    return cleanup_post_text(text)
 
 
 def validate_quote_post(text: str) -> tuple[bool, dict[str, bool]]:
