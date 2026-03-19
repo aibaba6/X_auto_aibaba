@@ -6,6 +6,7 @@ from typing import Iterable
 import tweepy
 
 from .models import QuoteCandidate
+from .text_normalize import cleanup_post_linebreaks
 
 
 def _mask_secret(value: str | None) -> str:
@@ -120,7 +121,8 @@ class XClient:
         quote_tweet_id: str | None = None,
         media_paths: list[str] | None = None,
     ) -> str:
-        kwargs = {"text": text}
+        cleaned_text = cleanup_post_linebreaks(text)
+        kwargs = {"text": cleaned_text}
         if quote_tweet_id:
             kwargs["quote_tweet_id"] = quote_tweet_id
         if media_paths:
@@ -138,7 +140,8 @@ class XClient:
         return str(resp.data.get("id")) if resp and resp.data else ""
 
     def create_reply(self, text: str, in_reply_to_tweet_id: str) -> str:
-        resp = self.client.create_tweet(text=text, in_reply_to_tweet_id=in_reply_to_tweet_id)
+        cleaned_text = cleanup_post_linebreaks(text)
+        resp = self.client.create_tweet(text=cleaned_text, in_reply_to_tweet_id=in_reply_to_tweet_id)
         return str(resp.data.get("id")) if resp and resp.data else ""
 
     def search_multi(self, queries: Iterable[str], per_query: int = 10) -> list[QuoteCandidate]:

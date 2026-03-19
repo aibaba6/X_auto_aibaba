@@ -7,6 +7,7 @@ from typing import Any
 from openai import OpenAI
 
 from .models import ContentItem, DraftPost, QuoteCandidate
+from .text_normalize import cleanup_post_linebreaks
 
 
 SYSTEM_PROMPT = """あなたはX運用の編集者です。事実を過度に断定せず、短文で価値を出してください。"""
@@ -202,6 +203,7 @@ def normalize_x_post_text(text: str, slot_name: str = "morning") -> str:
     # Tone normalization: avoid hard "〜だ。", prefer "です。" or concise ending.
     # Keep meaning while softening tone for this account style.
     body = COPULA_DA_RE.sub(r"\1です。", body)
+    body = cleanup_post_linebreaks(body)
     body = re.sub(r"[ \t]+$", "", body, flags=re.MULTILINE).strip()
     body = re.sub(r"\n{3,}", "\n\n", body)
 

@@ -62,6 +62,7 @@ from src.x_autopost_tool.pdf_knowledge import (
     update_pdf_doc_settings,
 )
 from src.x_autopost_tool.settings import load_config
+from src.x_autopost_tool.text_normalize import cleanup_post_linebreaks
 from src.x_autopost_tool.uniqueness import (
     MemoryStore,
     append_history,
@@ -1392,6 +1393,7 @@ def api_test_post():
 
     if not text:
         return jsonify({"ok": False, "message": "投稿本文が空です。"}), 400
+    text = cleanup_post_linebreaks(text)
     if len(text) > 280:
         return jsonify({"ok": False, "message": f"文字数が280を超えています: {len(text)}"}), 400
 
@@ -1427,7 +1429,7 @@ def api_test_post():
             resp = _x_client().create_tweet(text=text, user_auth=True)
         tweet_id = str(resp.data.get("id")) if resp and resp.data else ""
         if attach_source_reply and source_url and tweet_id:
-            reply = f"出典メモ: {source_url}"
+            reply = cleanup_post_linebreaks(f"出典メモ: {source_url}")
             _x_client().create_tweet(text=reply, in_reply_to_tweet_id=tweet_id, user_auth=True)
         me = _x_client().get_me(user_auth=True, user_fields=["username"])
         username = me.data.username if me and me.data else ""
