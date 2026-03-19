@@ -208,8 +208,23 @@ def _latest_topic_from_item(item: ContentItem) -> tuple[str, str]:
     return topic, body
 
 
+def _sentence(text: str) -> str:
+    value = (text or "").strip()
+    if not value:
+        return ""
+    if value[-1] in "。！？":
+        return value
+    return f"{value}。"
+
+
+def _build_structured_post(hook: str, body: str, takeaway: str, tags: str, slot_name: str) -> str:
+    parts = [_sentence(hook), body.strip(), takeaway.strip()]
+    body_text = "\n".join(part for part in parts if part)
+    return _normalize(f"{body_text}\n\n{tags}", slot_name=slot_name)
+
+
 def _static_post(topic: str, insight: str, action: str, tags: str, slot_name: str) -> str:
-    return _normalize(f"{topic}\n\n{insight}\n{action}\n\n{tags}", slot_name=slot_name)
+    return _build_structured_post(topic, insight, action, tags, slot_name)
 
 
 def _build_quote_drafts(pool: list[dict[str, str]]) -> list[DraftPost]:

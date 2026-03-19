@@ -23,6 +23,7 @@ from .uniqueness import (
     history_fingerprints,
     history_pattern_types,
     history_idea_keys,
+    history_topics,
     load_history,
     load_memory,
     loose_fingerprint,
@@ -610,6 +611,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     recent_semantic = semantic_summaries(history, slot=resolved_slot, limit=10)
     recent_content_types = history_pattern_types(history, slot=resolved_slot, limit=6)
     recent_idea_keys = history_idea_keys(history, slot=resolved_slot, limit=40)
+    posted_topics = history_topics(history, slot=resolved_slot)
     memory_changed = False
     history_changed = False
     x = XClient()
@@ -807,8 +809,9 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         for attempt, d in enumerate(drafts, start=1):
             print(f"[UNIQUE RETRY] attempt={attempt}")
             print(f"[SEMANTIC RETRY] attempt={attempt}")
-            if level != "forced" and d.content_type and not _content_type_allowed(d.content_type, recent_content_types, slot=resolved_slot):
-                print(f"[UNIQUE REJECT] reason=content_type_repeat type={d.content_type}")
+            pattern_key = (d.pattern_type or d.content_type or "").strip().lower()
+            if level != "forced" and pattern_key and not _content_type_allowed(pattern_key, recent_content_types, slot=resolved_slot):
+                print(f"[UNIQUE REJECT] reason=content_type_repeat type={pattern_key}")
                 continue
             ok, reasons = validate_post_draft(d, config, min_chars=slot_min_chars, max_chars=slot_max_chars)
             if not ok:
@@ -822,6 +825,11 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             print(f"[IDEA] topic={d.topic[:80] if d.topic else '-'} claim={d.claim[:80] if d.claim else '-'} angle={d.angle[:80] if d.angle else '-'}")
             print(f"[PATTERN] {d.pattern_type or d.content_type or '-'}")
             print(f"[STRUCTURE] {d.structure or '-'}")
+            topic_key = (d.topic or "").strip().lower()
+            if topic_key and topic_key in posted_topics:
+                print("[DUPLICATE REJECT] reason=topic_duplicate")
+                print("[HISTORY REJECT] reason=topic_duplicate")
+                continue
             if any(idea_key) and idea_key in recent_idea_keys:
                 print("[DUPLICATE REJECT] reason=idea_duplicate")
                 print("[HISTORY REJECT] reason=idea_duplicate")
@@ -851,7 +859,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                 print(f"[CLAIM] {d.claim[:120]}")
             if d.structure:
                 print(f"[STRUCTURE] {d.structure}")
-            if d.content_type == "trend" and d.topic:
+            if d.pattern_type == "trend" and d.topic:
                 print(f"[TREND SOURCE] {d.topic[:120]}")
             if level == "forced" and d.content_type == "quote":
                 print("[FALLBACK USED] type=quote")
@@ -868,6 +876,8 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             passed_drafts.append(d)
             if d.content_type:
                 recent_content_types.append(d.pattern_type or d.content_type)
+            if topic_key:
+                posted_topics.add(topic_key)
             if any(idea_key):
                 recent_idea_keys.add(idea_key)
             break

@@ -75,6 +75,7 @@ from src.x_autopost_tool.uniqueness import (
     history_fingerprints,
     history_pattern_types,
     history_idea_keys,
+    history_topics,
     loose_fingerprint,
     load_history,
     load_memory,
@@ -1119,6 +1120,10 @@ def api_plan_preview():
         "noon": history_content_types(history, slot="noon", limit=6),
         "evening": history_pattern_types(history, slot="evening", limit=6),
     }
+    recent_topics_by_slot = {
+        "morning": history_topics(history, slot="morning"),
+        "evening": history_topics(history, slot="evening"),
+    }
     total_days = _days_from_unit(unit, count)
     slots = config.required_daily_slots or ["morning", "noon", "evening"]
     items = fetch_rss_items(config.rss_feeds, max_items=config.max_input_items)
@@ -1188,16 +1193,21 @@ def api_plan_preview():
                         candidate = draft.text
                         print(f"[SEMANTIC RETRY] attempt={attempt}")
                         recent_types = recent_content_types_by_slot["morning"][-1:]
+                        pattern_key = (draft.pattern_type or draft.content_type or "").strip().lower()
+                        topic_key = (draft.topic or "").strip().lower()
                         idea_key = (
                             (draft.topic or "").strip().lower(),
                             (draft.claim or "").strip().lower(),
                             (draft.angle or "").strip().lower(),
                         )
+                        if topic_key and topic_key in recent_topics_by_slot["morning"]:
+                            print("[DUPLICATE REJECT] reason=topic_duplicate")
+                            continue
                         if any(idea_key) and idea_key in recent_idea_keys_by_slot["morning"]:
                             print("[DUPLICATE REJECT] reason=idea_duplicate")
                             continue
-                        if level != "forced" and draft.content_type and draft.content_type in recent_types:
-                            print(f"[UNIQUE REJECT] reason=content_type_repeat type={draft.content_type}")
+                        if level != "forced" and pattern_key and pattern_key in recent_types:
+                            print(f"[UNIQUE REJECT] reason=content_type_repeat type={pattern_key}")
                             continue
                         if not _is_used_before(candidate, memory, posted_morning_fp, history=history, slot="morning", generation_level=level):
                             if not (_seen_keys(candidate) & local_fp):
@@ -1210,8 +1220,10 @@ def api_plan_preview():
                                 if draft.content_type:
                                     print(f"[PICKED TYPE] type={draft.content_type}")
                                     recent_content_types_by_slot["morning"].append(draft.pattern_type or draft.content_type)
-                                    if any(idea_key):
-                                        recent_idea_keys_by_slot["morning"].add(idea_key)
+                                if topic_key:
+                                    recent_topics_by_slot["morning"].add(topic_key)
+                                if any(idea_key):
+                                    recent_idea_keys_by_slot["morning"].add(idea_key)
                                 picked = candidate
                                 picked_draft = draft
                                 break
@@ -1269,16 +1281,21 @@ def api_plan_preview():
                         candidate = draft.text
                         print(f"[SEMANTIC RETRY] attempt={attempt}")
                         recent_types = recent_content_types_by_slot["evening"][-2:]
+                        pattern_key = (draft.pattern_type or draft.content_type or "").strip().lower()
+                        topic_key = (draft.topic or "").strip().lower()
                         idea_key = (
                             (draft.topic or "").strip().lower(),
                             (draft.claim or "").strip().lower(),
                             (draft.angle or "").strip().lower(),
                         )
+                        if topic_key and topic_key in recent_topics_by_slot["evening"]:
+                            print("[DUPLICATE REJECT] reason=topic_duplicate")
+                            continue
                         if any(idea_key) and idea_key in recent_idea_keys_by_slot["evening"]:
                             print("[DUPLICATE REJECT] reason=idea_duplicate")
                             continue
-                        if level != "forced" and draft.content_type and draft.content_type in recent_types:
-                            print(f"[UNIQUE REJECT] reason=content_type_repeat type={draft.content_type}")
+                        if level != "forced" and pattern_key and pattern_key in recent_types:
+                            print(f"[UNIQUE REJECT] reason=content_type_repeat type={pattern_key}")
                             continue
                         if not _is_used_before(candidate, memory, posted_evening_fp, history=history, slot="evening", generation_level=level):
                             if not (_seen_keys(candidate) & local_fp):
@@ -1291,13 +1308,15 @@ def api_plan_preview():
                                 if draft.content_type:
                                     print(f"[PICKED TYPE] type={draft.content_type}")
                                     recent_content_types_by_slot["evening"].append(draft.pattern_type or draft.content_type)
-                                    if any(idea_key):
-                                        recent_idea_keys_by_slot["evening"].add(idea_key)
+                                if topic_key:
+                                    recent_topics_by_slot["evening"].add(topic_key)
+                                if any(idea_key):
+                                    recent_idea_keys_by_slot["evening"].add(idea_key)
                                 if draft.topic:
                                     print(f"[TOPIC] {draft.topic[:120]}")
                                 if draft.structure:
                                     print(f"[STRUCTURE] {draft.structure}")
-                                if draft.content_type == "trend" and draft.topic:
+                                if draft.pattern_type == "trend" and draft.topic:
                                     print(f"[TREND SOURCE] {draft.topic[:120]}")
                                 print(
                                     f"[EVENING PICKED] hook={semantic.candidate.hook[:60]} "
