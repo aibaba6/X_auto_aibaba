@@ -227,13 +227,26 @@ def _apply_analytics_filters(entries: list[dict], args) -> list[dict]:
     has_media = str(args.get("has_media", "")).strip().lower()
     sort = str(args.get("sort", "posted_at_desc")).strip()
 
+    def parse_posted_at(value: str) -> datetime | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except Exception:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.astimezone()
+        return parsed
+
+    min_dt = datetime(1970, 1, 1).astimezone()
+
     if days > 0:
-        cutoff = datetime.now() - timedelta(days=days)
+        cutoff = datetime.now().astimezone() - timedelta(days=days)
         filtered = [
             entry
             for entry in filtered
-            if str(entry.get("posted_at", "")).strip()
-            and datetime.fromisoformat(str(entry.get("posted_at", "")).strip()) >= cutoff
+            if (dt := parse_posted_at(str(entry.get("posted_at", "")).strip())) and dt >= cutoff
         ]
     if slot:
         filtered = [entry for entry in filtered if str(entry.get("slot", "")).strip() == slot]
@@ -246,8 +259,8 @@ def _apply_analytics_filters(entries: list[dict], args) -> list[dict]:
         filtered = [entry for entry in filtered if bool(entry.get("has_media", False)) is want]
 
     sort_map = {
-        "posted_at_desc": lambda row: str(row.get("posted_at", "")),
-        "posted_at_asc": lambda row: str(row.get("posted_at", "")),
+        "posted_at_desc": lambda row: parse_posted_at(str(row.get("posted_at", "")).strip()) or min_dt,
+        "posted_at_asc": lambda row: parse_posted_at(str(row.get("posted_at", "")).strip()) or min_dt,
         "impressions_desc": lambda row: float(row.get("impressions", 0) or 0),
         "likes_desc": lambda row: float(row.get("likes", 0) or 0),
         "engagement_desc": lambda row: float(row.get("engagement_rate", 0.0) or 0.0),

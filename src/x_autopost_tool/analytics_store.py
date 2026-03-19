@@ -189,17 +189,23 @@ def _avg(values: list[float]) -> float:
     return round(sum(values) / len(values), 3)
 
 
+def _parse_posted_at(value: str) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.astimezone()
+    return parsed
+
+
 def summarize_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
-    now = datetime.now()
+    now = datetime.now().astimezone()
     recent_cutoff = now - timedelta(days=30)
-
-    def parse_dt(value: str) -> datetime | None:
-        try:
-            return datetime.fromisoformat(value)
-        except Exception:
-            return None
-
-    last30 = [entry for entry in entries if (dt := parse_dt(str(entry.get("posted_at", "")))) and dt >= recent_cutoff]
+    last30 = [entry for entry in entries if (dt := _parse_posted_at(str(entry.get("posted_at", "")))) and dt >= recent_cutoff]
     avg_impressions = _avg([float(entry.get("impressions", 0) or 0) for entry in last30])
     avg_engagement = _avg([float(entry.get("engagement_rate", 0.0) or 0.0) for entry in last30])
     best = max(entries, key=lambda e: (float(e.get("engagement_rate", 0.0) or 0.0), float(e.get("impressions", 0) or 0)), default=None)
