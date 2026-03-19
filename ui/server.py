@@ -7,6 +7,7 @@ import shlex
 import shutil
 import subprocess
 import time
+import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 import sys
@@ -61,6 +62,7 @@ from src.x_autopost_tool.pdf_knowledge import (
     load_pdf_index,
     update_pdf_doc_settings,
 )
+from src.x_autopost_tool.schedule_utils import format_datetime_local_input, serialize_scheduled_datetime
 from src.x_autopost_tool.settings import load_config
 from src.x_autopost_tool.text_normalize import cleanup_post_linebreaks
 from src.x_autopost_tool.uniqueness import (
@@ -276,6 +278,11 @@ def _load_queue() -> list[dict]:
 def _save_queue(items: list[dict]) -> None:
     QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
     QUEUE_PATH.write_text(yaml.safe_dump(items, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def _queue_item_id(raw_id: str | None = None) -> str:
+    value = str(raw_id or "").strip()
+    return value or f"queue_{uuid.uuid4().hex[:12]}"
 
 
 def _queue_sync_authorized() -> bool:
@@ -1219,6 +1226,13 @@ def api_get_queue():
     queue = []
     for item in _load_queue():
         row = dict(item)
+        row["id"] = _queue_item_id(row.get("id"))
+        row["schedule_at"] = serialize_scheduled_datetime(str(row.get("schedule_at", "")).strip()) or str(
+            row.get("schedule_at", "")
+        ).strip()
+        row["schedule_at_local"] = format_datetime_local_input(row["schedule_at"])
+        row["status"] = str(row.get("status", "scheduled")).strip() or "scheduled"
+        row["posted"] = bool(row.get("posted", False))
         media_path = str(row.get("media_path", "")).strip()
         if media_path:
             try:
@@ -1244,16 +1258,23 @@ def api_save_queue():
     conf = load_config(str(CONFIG_PATH)) if CONFIG_PATH.exists() else None
     memory = load_memory(conf.uniqueness_memory_path) if conf else load_memory("post_memory.yaml")
     normalized = []
+    invalid_items: list[str] = []
     for item in queue:
         if not isinstance(item, dict):
             continue
-        schedule_at = str(item.get("schedule_at", "")).strip()
+        raw_schedule_at = str(item.get("schedule_at", "")).strip()
+        schedule_at = serialize_scheduled_datetime(raw_schedule_at, conf)
         slot = str(item.get("slot", "")).strip()
         theme = str(item.get("theme", "")).strip()
         text = str(item.get("text", "")).strip()
         refresh_mode = str(item.get("refresh_mode", "")).strip()
         allow_empty_text = refresh_mode == "jit_noon"
-        if not schedule_at or not slot or (not text and not allow_empty_text):
+        item_id = _queue_item_id(item.get("id"))
+        if not schedule_at:
+            invalid_items.append(f"id={item_id}:invalid_schedule_at:{raw_schedule_at or '-'}")
+            continue
+        if not slot or (not text and not allow_empty_text):
+            invalid_items.append(f"id={item_id}:missing_required_fields")
             continue
         raw_media_path = str(item.get("media_path", "")).strip()
         try:
@@ -1263,6 +1284,7 @@ def api_save_queue():
             persisted_media_path = ""
         normalized.append(
             {
+                "id": _queue_item_id(item.get("id")),
                 "schedule_at": schedule_at,
                 "slot": slot,
                 "theme": theme,
@@ -1276,7 +1298,16 @@ def api_save_queue():
                 "source_author": str(item.get("source_author", "")).strip(),
                 "last_refreshed_at": str(item.get("last_refreshed_at", "")).strip(),
                 "refresh_mode": refresh_mode,
+                "status": str(item.get("status", "scheduled")).strip() or "scheduled",
+                "posted": bool(item.get("posted", False)),
+                "posted_at": str(item.get("posted_at", "")).strip(),
             }
+        )
+
+    if invalid_items:
+        return (
+            jsonify({"ok": False, "message": "保存できないキュー項目があります。", "invalid_items": invalid_items}),
+            400,
         )
 
     _save_queue(normalized)
@@ -1288,6 +1319,7 @@ def api_save_queue():
     queue = []
     for item in normalized:
         row = dict(item)
+        row["schedule_at_local"] = format_datetime_local_input(str(row.get("schedule_at", "")).strip(), conf)
         media_path = str(row.get("media_path", "")).strip()
         if media_path:
             try:

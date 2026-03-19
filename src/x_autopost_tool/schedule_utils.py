@@ -35,3 +35,17 @@ def parse_scheduled_datetime(value: str, config=None) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=tz)
     return parsed.astimezone(tz)
+
+
+def serialize_scheduled_datetime(value: str, config=None) -> str:
+    parsed = parse_scheduled_datetime(value, config)
+    if not parsed:
+        return ""
+    return parsed.replace(microsecond=0).isoformat()
+
+
+def format_datetime_local_input(value: str, config=None) -> str:
+    parsed = parse_scheduled_datetime(value, config)
+    if not parsed:
+        return (value or "").strip()
+    return parsed.strftime("%Y-%m-%dT%H:%M")

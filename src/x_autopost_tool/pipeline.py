@@ -189,26 +189,60 @@ def _safe_create_reply(x: XClient, text: str, in_reply_to_tweet_id: str, label: 
         return None
 
 
-def _find_due_queue_item(items: list[dict], slot: str, now: datetime, config: AppConfig) -> tuple[int, dict] | None:
+def _queue_item_id(item: dict) -> str:
+    return str(item.get("id", "")).strip() or "-"
+
+
+def _find_due_queue_item(
+    items: list[dict], slot: str, now: datetime, config: AppConfig
+) -> tuple[str, tuple[int, dict] | None, str | None]:
     matches: list[tuple[datetime, int, dict]] = []
+    slot_items = 0
+    malformed_reasons: list[str] = []
+    print(f"[QUEUE DUE CHECK] now={now.replace(microsecond=0).isoformat()} slot={slot}")
     for idx, item in enumerate(items):
         if not isinstance(item, dict):
             continue
-        if str(item.get("slot", "")).strip() != slot:
+        item_slot = str(item.get("slot", "")).strip()
+        if item_slot != slot:
             continue
+        slot_items += 1
+        item_id = _queue_item_id(item)
         schedule_at = str(item.get("schedule_at", "")).strip()
+        status = str(item.get("status", "scheduled")).strip() or "scheduled"
+        posted = bool(item.get("posted", False))
+        print(f"[QUEUE SYNC ITEM] id={item_id} slot={item_slot} schedule_at={schedule_at or '-'}")
+        if posted or status == "posted":
+            print(f"[QUEUE DUE CHECK] id={item_id} scheduled=- due=no reason=already_posted")
+            continue
         if not schedule_at:
+            print(f"[QUEUE HOLD] reason=missing_schedule_at id={item_id}")
+            malformed_reasons.append(f"missing_schedule_at:id={item_id}")
             continue
         due_at = parse_scheduled_datetime(schedule_at, config)
         if not due_at:
+            print(f"[QUEUE HOLD] reason=parse_failed id={item_id} schedule_at={schedule_at}")
+            malformed_reasons.append(f"parse_failed:id={item_id}")
             continue
-        if due_at <= now:
+        is_due = due_at <= now
+        print(
+            "[QUEUE DUE CHECK] "
+            f"id={item_id} "
+            f"scheduled={due_at.replace(microsecond=0).isoformat()} "
+            f"due={'yes' if is_due else 'no'}"
+        )
+        if is_due:
             matches.append((due_at, idx, item))
-    if not matches:
-        return None
-    matches.sort(key=lambda x: x[0])
-    _due_at, idx, item = matches[0]
-    return idx, item
+    if matches:
+        matches.sort(key=lambda x: x[0])
+        _due_at, idx, item = matches[0]
+        print(f"[QUEUE PICKED] id={_queue_item_id(item)} slot={slot}")
+        return "picked", (idx, item), None
+    if malformed_reasons:
+        return "hold", None, ",".join(malformed_reasons)
+    if slot_items:
+        return "no_due", None, "no_due_items"
+    return "empty", None, "no_slot_items"
 
 
 def _resolve_media_path(raw_path: str) -> str | None:
@@ -230,10 +264,10 @@ def _post_due_queue_item(
     memory,
     queue_path: str | None,
     recent_self_posts: list[str] | None = None,
-) -> bool:
+) -> str:
     if not queue_path and not queue_sync_enabled():
         print("[QUEUE SKIP] queue_path未設定")
-        return False
+        return "no_due"
     queue_label = queue_path or "remote-sync"
     if not queue_sync_enabled():
         from pathlib import Path
@@ -242,17 +276,24 @@ def _post_due_queue_item(
         queue_label = str(queue_file)
         if not queue_file.exists():
             print(f"[QUEUE SKIP] queue file not found: {queue_file}")
-            return False
+            return "no_due"
     queue = load_queue_items(queue_path)
     if not queue:
         print(f"[QUEUE SKIP] queue file not found: {queue_label}")
-        return False
-    found = _find_due_queue_item(queue, resolved_slot, now, config)
-    if not found:
-        print(f"[QUEUE SKIP] due item not found slot={resolved_slot} items={len(queue)}")
-        return False
+        return "no_due"
+    state, found, reason = _find_due_queue_item(queue, resolved_slot, now, config)
+    if state == "empty":
+        print(f"[QUEUE FALLBACK] reason=no_due_items_only slot={resolved_slot} items={len(queue)}")
+        return "no_due"
+    if state == "no_due":
+        print(f"[QUEUE FALLBACK] reason=no_due_items_only slot={resolved_slot} items={len(queue)}")
+        return "no_due"
+    if state == "hold" or not found:
+        print(f"[QUEUE HOLD] reason={reason or 'queue_item_invalid'} slot={resolved_slot}")
+        return "hold"
 
     idx, item = found
+    item_id = _queue_item_id(item)
     text = str(item.get("text", "")).strip()
     refresh_mode = str(item.get("refresh_mode", "")).strip()
     if not text and refresh_mode == "jit_noon" and resolved_slot == "noon":
@@ -273,19 +314,25 @@ def _post_due_queue_item(
             item["text"] = text
             item["last_refreshed_at"] = now.replace(microsecond=0).isoformat()
             save_queue_items(queue_path, queue)
-            print(f"[QUEUE REFRESH] slot=noon schedule_at={item.get('schedule_at', '')} reason={draft.reason}")
+            print(
+                f"[QUEUE REFRESH] id={item_id} slot=noon schedule_at={item.get('schedule_at', '')} reason={draft.reason}"
+            )
     if not text:
         print(
             "[QUEUE HOLD] "
-            f"slot={resolved_slot} schedule_at={item.get('schedule_at', '')} refresh_mode={refresh_mode or 'none'}"
+            f"id={item_id} slot={resolved_slot} schedule_at={item.get('schedule_at', '')} refresh_mode={refresh_mode or 'none'}"
         )
-        return True
+        return "hold"
 
     media_path = _resolve_media_path(str(item.get("media_path", "")))
+    if str(item.get("media_path", "")).strip() and not media_path:
+        print(f"[QUEUE HOLD] reason=media_resolve_failed id={item_id} path={item.get('media_path', '')}")
+        return "hold"
     media_paths = [media_path] if media_path else None
     reply_text = str(item.get("reply_text", "")).strip()
     print(
         "[QUEUE POST] "
+        f"id={item_id} "
         f"slot={resolved_slot} "
         f"schedule_at={item.get('schedule_at', '')} "
         f"media={'yes' if media_paths else 'no'} "
@@ -297,11 +344,12 @@ def _post_due_queue_item(
         reply_info = f"\n  reply: {reply_text}" if reply_text else ""
         media_info = f"\n  media: {media_paths}" if media_paths else ""
         print(f"[DRY-RUN QUEUE POST] {text}{media_info}{reply_info}")
-        return True
+        return "posted"
 
     tweet_id = _safe_create_post(x, text, label=f"queue-post-{resolved_slot}", media_paths=media_paths)
     if not tweet_id:
-        return False
+        print(f"[QUEUE HOLD] reason=post_failed id={item_id}")
+        return "hold"
     if reply_text:
         _safe_create_reply(x, reply_text, in_reply_to_tweet_id=tweet_id, label=f"queue-reply-{resolved_slot}")
     register_text(text, memory)
@@ -316,10 +364,14 @@ def _post_due_queue_item(
         posted_at=now.isoformat(),
     )
     save_history(history)
+    item["posted"] = True
+    item["status"] = "posted"
+    item["posted_at"] = now.replace(microsecond=0).isoformat()
+    print(f"[QUEUE MARK POSTED] id={item_id} tweet_id={tweet_id}")
     del queue[idx]
     save_queue_items(queue_path, queue)
     print(f"queue posted: {tweet_id}")
-    return True
+    return "posted"
 
 
 def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None = None) -> None:
@@ -346,7 +398,10 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     recent_post_fingerprints = _fingerprints(recent_self_posts)
     print(f"[RECENT POSTS] count={len(recent_self_posts)}")
 
-    if _post_due_queue_item(x, config, resolved_slot, now, memory, queue_path, recent_self_posts=recent_self_posts):
+    queue_result = _post_due_queue_item(x, config, resolved_slot, now, memory, queue_path, recent_self_posts=recent_self_posts)
+    if queue_result == "posted":
+        return
+    if queue_result == "hold":
         return
 
     print("[1/5] RSS収集")

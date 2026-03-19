@@ -8,6 +8,26 @@ from urllib import error, request
 import yaml
 
 
+def _item_debug_line(item: dict) -> str:
+    if not isinstance(item, dict):
+        return "invalid-item"
+    return (
+        f"id={str(item.get('id', '')).strip() or '-'} "
+        f"slot={str(item.get('slot', '')).strip() or '-'} "
+        f"schedule_at={str(item.get('schedule_at', '')).strip() or '-'} "
+        f"status={str(item.get('status', '')).strip() or '-'} "
+        f"posted={'yes' if item.get('posted') else 'no'}"
+    )
+
+
+def _log_queue_items(prefix: str, items: list[dict], limit: int = 8) -> None:
+    print(f"{prefix} count={len(items)}")
+    for item in items[:limit]:
+        print(f"[QUEUE SYNC ITEM] {_item_debug_line(item)}")
+    if len(items) > limit:
+        print(f"{prefix} truncated={len(items) - limit}")
+
+
 def _mask_env(value: str | None) -> str:
     raw = (value or "").strip()
     if not raw:
@@ -74,7 +94,7 @@ def _remote_load() -> list[dict]:
         )
     queue = payload.get("queue", [])
     if isinstance(queue, list):
-        print(f"[QUEUE SYNC LOAD] count={len(queue)}")
+        _log_queue_items("[QUEUE SYNC LOAD]", queue)
     return queue if isinstance(queue, list) else []
 
 
@@ -87,7 +107,9 @@ def _remote_save(items: list[dict]) -> None:
 
 def load_queue_items(queue_path: str | None) -> list[dict]:
     if not queue_sync_enabled():
-        return _local_load(queue_path)
+        items = _local_load(queue_path)
+        _log_queue_items("[QUEUE LOCAL LOAD]", items)
+        return items
     try:
         return _remote_load()
     except error.HTTPError as e:
@@ -95,17 +117,20 @@ def load_queue_items(queue_path: str | None) -> list[dict]:
     except Exception as e:
         print(f"[QUEUE SYNC ERROR] load {e}")
     fallback = _local_load(queue_path)
+    print(f"[QUEUE SYNC FALLBACK] used=yes local_count={len(fallback)}")
     if fallback:
-        print(f"[QUEUE SYNC FALLBACK] local load count={len(fallback)}")
+        _log_queue_items("[QUEUE SYNC FALLBACK]", fallback)
     return fallback
 
 
 def save_queue_items(queue_path: str | None, items: list[dict]) -> None:
     if not queue_sync_enabled():
+        _log_queue_items("[QUEUE LOCAL SAVE]", items)
         _local_save(queue_path, items)
         return
     try:
         _remote_save(items)
+        _log_queue_items("[QUEUE SYNC SAVE]", items)
     except error.HTTPError as e:
         print(f"[QUEUE SYNC ERROR] save http={e.code}")
     except Exception as e:

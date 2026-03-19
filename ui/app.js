@@ -858,7 +858,7 @@ function renderQueueRows(items) {
       (row, idx) => `
       <tr data-idx="${idx}" data-refresh-mode="${esc(row.refresh_mode || "")}" data-slot="${esc(row.slot || "")}">
         <td><input type="checkbox" class="queue-select" /></td>
-        <td><input type="datetime-local" class="queue-datetime" value="${esc(row.schedule_at)}" /></td>
+        <td><input type="datetime-local" class="queue-datetime" value="${esc(row.schedule_at_local || row.schedule_at)}" /></td>
         <td>${esc(slotLabel(row.slot))}</td>
         <td>${esc(row.theme || "")}</td>
         <td>
