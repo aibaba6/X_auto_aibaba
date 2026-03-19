@@ -70,6 +70,9 @@ const planProgressText = document.getElementById("planProgressText");
 const planTbody = document.getElementById("planTbody");
 const queueTbody = document.getElementById("queueTbody");
 const queueMessage = document.getElementById("queueMessage");
+const queueTodayCount = document.getElementById("queueTodayCount");
+const queueRemainingCount = document.getElementById("queueRemainingCount");
+const queuePostedCount = document.getElementById("queuePostedCount");
 const railHint = document.getElementById("railHint");
 const generateImageBtn = document.getElementById("generateImageBtn");
 const deleteSelectedQueueBtn = document.getElementById("deleteSelectedQueueBtn");
@@ -319,6 +322,41 @@ function normalizeQueueItem(item) {
     media_candidate_name: item.media_candidate_name || "",
     media_generating: !!item.media_generating,
   };
+}
+
+function formatQueueDateTime(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "未設定";
+  const [datePart = "", timePart = ""] = raw.replace("T", " ").split(" ");
+  return timePart ? `${datePart} / ${timePart.slice(0, 5)}` : datePart;
+}
+
+function queueStatusLabel(row) {
+  if (row.posted || row.status === "posted") return "投稿済み";
+  if (row.refresh_mode === "jit_noon" && !(row.text || "").trim()) return "直前生成";
+  return "予約中";
+}
+
+function queueStatusClass(row) {
+  if (row.posted || row.status === "posted") return "posted";
+  if (row.refresh_mode === "jit_noon" && !(row.text || "").trim()) return "dynamic";
+  return "scheduled";
+}
+
+function queueSectionMeta(slot) {
+  if (slot === "morning") return { title: "Morning", lead: "学びと設計視点を積み上げる朝枠" };
+  if (slot === "noon") return { title: "Noon", lead: "AIニュースと予測を扱う昼枠" };
+  return { title: "Evening", lead: "共感と振り返りを整える夕方枠" };
+}
+
+function updateQueueKpis(items) {
+  const today = new Date().toISOString().slice(0, 10);
+  const todayCount = items.filter((item) => String(item.schedule_at || "").slice(0, 10) === today).length;
+  const remainingCount = items.filter((item) => !(item.posted || item.status === "posted")).length;
+  const postedCount = items.filter((item) => item.posted || item.status === "posted").length;
+  if (queueTodayCount) queueTodayCount.textContent = String(todayCount);
+  if (queueRemainingCount) queueRemainingCount.textContent = String(remainingCount);
+  if (queuePostedCount) queuePostedCount.textContent = String(postedCount);
 }
 
 function planMediaStatusLabel(row) {
@@ -849,27 +887,71 @@ function renderPlanRows(items) {
 }
 
 function renderQueueRows(items) {
+  updateQueueKpis(items);
   if (!items.length) {
-    queueTbody.innerHTML = "<tr><td colspan='7'>保存された投稿キューはありません。</td></tr>";
+    queueTbody.innerHTML = `
+      <section class="queue-slot-section is-empty">
+        <div class="queue-slot-header">
+          <div>
+            <h3>投稿キューは空です</h3>
+            <p>「計画を作成」から始めると、ここにカード形式で並びます。</p>
+          </div>
+        </div>
+      </section>
+    `;
     return;
   }
-  const html = items
-    .map(
-      (row, idx) => `
-      <tr data-idx="${idx}" data-refresh-mode="${esc(row.refresh_mode || "")}" data-slot="${esc(row.slot || "")}">
-        <td><input type="checkbox" class="queue-select" /></td>
-        <td><input type="datetime-local" class="queue-datetime" value="${esc(row.schedule_at_local || row.schedule_at)}" /></td>
-        <td>${esc(slotLabel(row.slot))}</td>
-        <td>${esc(row.theme || "")}</td>
-        <td>
-          <textarea class="queue-text" placeholder="${
-            row.refresh_mode === "jit_noon" ? "投稿30分前に自動生成されます（手動入力も可）" : ""
-          }">${esc(row.text || "")}</textarea>
-        </td>
-        <td>
-          <textarea class="queue-reply-text" placeholder="投稿後に付けるリプ（任意）">${esc(row.reply_text || "")}</textarea>
-        </td>
-        <td class="queue-media-cell" data-media-path="${esc(row.media_path || "")}">
+  const grouped = {
+    morning: [],
+    noon: [],
+    evening: [],
+  };
+  items.forEach((row, idx) => {
+    const slot = ["morning", "noon", "evening"].includes(row.slot) ? row.slot : "evening";
+    grouped[slot].push({ row, idx });
+  });
+  const html = ["morning", "noon", "evening"]
+    .map((slot) => {
+      const meta = queueSectionMeta(slot);
+      const cards = grouped[slot]
+        .map(
+          ({ row, idx }) => `
+      <article class="queue-card" data-idx="${idx}" data-refresh-mode="${esc(row.refresh_mode || "")}" data-slot="${esc(
+            row.slot || "",
+          )}">
+        <div class="queue-card-top">
+          <div class="queue-card-slot slot-${esc(row.slot || slot)}">
+            <span class="queue-slot-label">${esc(slotLabel(row.slot))}</span>
+            <strong>${esc(meta.title)}</strong>
+          </div>
+          <span class="queue-status-pill ${queueStatusClass(row)}">${esc(queueStatusLabel(row))}</span>
+        </div>
+        <div class="queue-card-meta">
+          <label>
+            <span>予約時刻</span>
+            <input type="datetime-local" class="queue-datetime" value="${esc(row.schedule_at_local || row.schedule_at)}" />
+          </label>
+          <div class="queue-theme-box">
+            <span>テーマ</span>
+            <strong>${esc(row.theme || "テーマ未設定")}</strong>
+            <small>${esc(formatQueueDateTime(row.schedule_at_local || row.schedule_at))}</small>
+          </div>
+        </div>
+        <div class="queue-card-body">
+          <label class="queue-field queue-field-wide">
+            <span>投稿本文</span>
+            <textarea class="queue-text" placeholder="${
+              row.refresh_mode === "jit_noon" ? "投稿30分前に自動生成されます（手動入力も可）" : ""
+            }">${esc(row.text || "")}</textarea>
+          </label>
+          <label class="queue-field">
+            <span>投稿後リプ</span>
+            <textarea class="queue-reply-text" placeholder="投稿後に付けるリプ（任意）">${esc(
+              row.reply_text || "",
+            )}</textarea>
+          </label>
+        </div>
+        <div class="queue-media-card queue-media-cell" data-media-path="${esc(row.media_path || "")}">
           <div class="queue-media-meta">
             <strong class="queue-media-status">${esc(queueMediaStatusLabel(row))}</strong>
             <select class="visual-mode-select queue-media-source">
@@ -937,10 +1019,44 @@ function renderQueueRows(items) {
               }>キャンセル</button>
             </div>
           </div>
-        </td>
-      </tr>
+        </div>
+        <div class="queue-card-actions">
+          <label class="queue-select-pill">
+            <input type="checkbox" class="queue-select" />
+            <span>選択</span>
+          </label>
+          <button type="button" class="ghost mini queue-edit-btn">
+            <span class="material-symbols-rounded">edit</span>
+            <span>編集</span>
+          </button>
+          <button type="button" class="ghost mini danger queue-delete-btn">
+            <span class="material-symbols-rounded">delete</span>
+            <span>削除</span>
+          </button>
+        </div>
+      </article>
     `,
-    )
+        )
+        .join("");
+      return `
+        <section class="queue-slot-section">
+          <div class="queue-slot-header">
+            <div>
+              <p class="queue-section-kicker">${esc(meta.title)}</p>
+              <h3>${esc(slotLabel(slot))} セクション</h3>
+              <p>${esc(meta.lead)}</p>
+            </div>
+            <span class="queue-slot-count">${grouped[slot].length}件</span>
+          </div>
+          <div class="queue-slot-grid${cards ? "" : " is-empty"}">
+            ${
+              cards ||
+              `<div class="queue-empty-card"><strong>${esc(slotLabel(slot))}のキューはまだありません。</strong><p>この枠の予約を追加すると、ここに表示されます。</p></div>`
+            }
+          </div>
+        </section>
+      `;
+    })
     .join("");
   queueTbody.innerHTML = html;
 }
@@ -1042,21 +1158,20 @@ function clearPlanImage(idx) {
 }
 
 function collectQueueFromTable() {
-  const rows = [...queueTbody.querySelectorAll("tr[data-idx]")];
+  const rows = [...queueTbody.querySelectorAll("[data-idx]")];
   const out = [];
-  rows.forEach((tr) => {
-    const datetime = tr.querySelector(".queue-datetime")?.value || "";
-    const text = (tr.querySelector(".queue-text")?.value || "").trim();
-    const replyText = (tr.querySelector(".queue-reply-text")?.value || "").trim();
-    const refreshMode = tr.dataset.refreshMode || "";
-    const cells = tr.querySelectorAll("td");
-    const slot = (tr.dataset.slot || "").trim();
-    const theme = cells[3]?.textContent?.trim() || "";
-    const mediaCell = tr.querySelector(".queue-media-cell");
+  rows.forEach((card) => {
+    const datetime = card.querySelector(".queue-datetime")?.value || "";
+    const text = (card.querySelector(".queue-text")?.value || "").trim();
+    const replyText = (card.querySelector(".queue-reply-text")?.value || "").trim();
+    const refreshMode = card.dataset.refreshMode || "";
+    const slot = (card.dataset.slot || "").trim();
+    const theme = card.querySelector(".queue-theme-box strong")?.textContent?.trim() || "";
+    const mediaCell = card.querySelector(".queue-media-cell");
     const mediaPath = mediaCell?.dataset.mediaPath || "";
-    const mediaSource = tr.querySelector(".queue-media-source")?.value || "none";
-    const mediaPrompt = (tr.querySelector(".queue-media-prompt")?.value || "").trim();
-    const mediaVisualMode = tr.querySelector(".queue-media-visual-mode")?.value || getDefaultVisualMode();
+    const mediaSource = card.querySelector(".queue-media-source")?.value || "none";
+    const mediaPrompt = (card.querySelector(".queue-media-prompt")?.value || "").trim();
+    const mediaVisualMode = card.querySelector(".queue-media-visual-mode")?.value || getDefaultVisualMode();
     if (datetime && slot) {
       out.push({
         schedule_at: datetime,
@@ -1076,25 +1191,24 @@ function collectQueueFromTable() {
 }
 
 function syncQueueFromTable() {
-  const rows = [...queueTbody.querySelectorAll("tr[data-idx]")];
+  const rows = [...queueTbody.querySelectorAll("[data-idx]")];
   if (!rows.length) return currentQueue;
   currentQueue = rows
-    .map((tr) => {
-      const idx = Number(tr.dataset.idx);
+    .map((card) => {
+      const idx = Number(card.dataset.idx);
       const prev = currentQueue[idx] || {};
-      const datetime = tr.querySelector(".queue-datetime")?.value || "";
-      const text = (tr.querySelector(".queue-text")?.value || "").trim();
-      const replyText = (tr.querySelector(".queue-reply-text")?.value || "").trim();
-      const refreshMode = tr.dataset.refreshMode || "";
-      const slot = (tr.dataset.slot || "").trim();
-      const cells = tr.querySelectorAll("td");
-      const theme = cells[3]?.textContent?.trim() || "";
-      const mediaCell = tr.querySelector(".queue-media-cell");
+      const datetime = card.querySelector(".queue-datetime")?.value || "";
+      const text = (card.querySelector(".queue-text")?.value || "").trim();
+      const replyText = (card.querySelector(".queue-reply-text")?.value || "").trim();
+      const refreshMode = card.dataset.refreshMode || "";
+      const slot = (card.dataset.slot || "").trim();
+      const theme = card.querySelector(".queue-theme-box strong")?.textContent?.trim() || prev.theme || "";
+      const mediaCell = card.querySelector(".queue-media-cell");
       const mediaPath = mediaCell?.dataset.mediaPath || prev.media_path || "";
-      const mediaSource = tr.querySelector(".queue-media-source")?.value || prev.media_source || "none";
-      const mediaPrompt = (tr.querySelector(".queue-media-prompt")?.value || prev.media_prompt || "").trim();
+      const mediaSource = card.querySelector(".queue-media-source")?.value || prev.media_source || "none";
+      const mediaPrompt = (card.querySelector(".queue-media-prompt")?.value || prev.media_prompt || "").trim();
       const mediaVisualMode =
-        tr.querySelector(".queue-media-visual-mode")?.value || prev.media_visual_mode || getDefaultVisualMode();
+        card.querySelector(".queue-media-visual-mode")?.value || prev.media_visual_mode || getDefaultVisualMode();
       if (!datetime || !slot) return null;
       return normalizeQueueItem({
         ...prev,
@@ -1160,16 +1274,16 @@ async function generateQueueMedia(idx) {
     queueMessage.textContent = "画像生成には投稿文または生成用プロンプトが必要です。";
     return;
   }
-  const tr = queueTbody.querySelector(`tr[data-idx="${idx}"]`);
-  const progressWrap = tr?.querySelector(".queue-media-progress");
+  const card = queueTbody.querySelector(`[data-idx="${idx}"]`);
+  const progressWrap = card?.querySelector(".queue-media-progress");
   const progressBar = progressWrap?.querySelector("i");
   const progressText = progressWrap?.querySelector("p");
-  const generateBtn = tr?.querySelector(".queue-media-generate");
+  const generateBtn = card?.querySelector(".queue-media-generate");
   currentQueue[idx] = normalizeQueueItem({ ...row, media_source: "generate", media_generating: true });
   renderQueueRows(currentQueue);
   queueMessage.textContent = `${slotLabel(row.slot)}枠の画像を生成中...`;
-  const refreshedTr = queueTbody.querySelector(`tr[data-idx="${idx}"]`);
-  const nextProgressWrap = refreshedTr?.querySelector(".queue-media-progress");
+  const refreshedCard = queueTbody.querySelector(`[data-idx="${idx}"]`);
+  const nextProgressWrap = refreshedCard?.querySelector(".queue-media-progress");
   const nextProgressBar = nextProgressWrap?.querySelector("i");
   const nextProgressText = nextProgressWrap?.querySelector("p");
   const progress =
@@ -1220,7 +1334,7 @@ function approveQueueGeneratedMedia(idx) {
   });
   renderQueueRows(currentQueue);
   queueMessage.textContent = "生成画像を投稿キューの添付画像として採用しました。";
-  const btn = queueTbody.querySelector(`tr[data-idx="${idx}"] .queue-media-approve`);
+  const btn = queueTbody.querySelector(`[data-idx="${idx}"] .queue-media-approve`);
   showButtonSuccess(btn);
 }
 
@@ -1237,7 +1351,7 @@ function cancelQueueGeneratedMedia(idx) {
   });
   renderQueueRows(currentQueue);
   queueMessage.textContent = "生成候補をキャンセルしました。";
-  const btn = queueTbody.querySelector(`tr[data-idx="${idx}"] .queue-media-cancel`);
+  const btn = queueTbody.querySelector(`[data-idx="${idx}"] .queue-media-cancel`);
   showButtonSuccess(btn);
 }
 
@@ -1311,10 +1425,10 @@ async function loadQueue() {
 
 function deleteSelectedQueueRows() {
   syncQueueFromTable();
-  const rows = [...queueTbody.querySelectorAll("tr[data-idx]")];
+  const rows = [...queueTbody.querySelectorAll("[data-idx]")];
   const selectedIdx = rows
-    .filter((tr) => tr.querySelector(".queue-select")?.checked)
-    .map((tr) => Number(tr.dataset.idx));
+    .filter((card) => card.querySelector(".queue-select")?.checked)
+    .map((card) => Number(card.dataset.idx));
   if (!selectedIdx.length) {
     queueMessage.textContent = "削除対象を選択してください。";
     return;
@@ -1355,7 +1469,7 @@ async function uploadQueueMedia(idx, file) {
     });
     renderQueueRows(currentQueue);
     queueMessage.textContent = data.message || "画像を添付しました。保存すると反映されます。";
-    const btn = queueTbody.querySelector(`tr[data-idx="${idx}"] .queue-media-upload`);
+    const btn = queueTbody.querySelector(`[data-idx="${idx}"] .queue-media-upload`);
     showButtonSuccess(btn);
   } catch (e) {
     queueMessage.textContent = `画像添付エラー: ${e}`;
@@ -1377,8 +1491,16 @@ function clearQueueMedia(idx) {
   });
   renderQueueRows(currentQueue);
   queueMessage.textContent = "添付画像を解除しました。保存すると反映されます。";
-  const btn = queueTbody.querySelector(`tr[data-idx="${idx}"] .queue-media-clear`);
+  const btn = queueTbody.querySelector(`[data-idx="${idx}"] .queue-media-clear`);
   showButtonSuccess(btn);
+}
+
+function deleteQueueCard(idx) {
+  syncQueueFromTable();
+  if (!Number.isFinite(idx)) return;
+  currentQueue = currentQueue.filter((_, itemIdx) => itemIdx !== idx);
+  renderQueueRows(currentQueue);
+  queueMessage.textContent = "投稿カードを削除しました。保存すると反映されます。";
 }
 
 cards.forEach((card) => {
@@ -1438,6 +1560,14 @@ document.getElementById("testPostBtn").addEventListener("click", testPost);
 document.getElementById("saveTargetBtn").addEventListener("click", saveTargetAccount);
 document.getElementById("verifyTargetBtn").addEventListener("click", verifyTargetAccount);
 document.getElementById("applyPlanToQueueBtn").addEventListener("click", applyPlanToQueue);
+document.getElementById("queueHeroBuildBtn")?.addEventListener("click", () => {
+  setPage("planner");
+  document.getElementById("buildPlanBtn")?.click();
+});
+document.getElementById("queueHeroApplyBtn")?.addEventListener("click", () => {
+  applyPlanToQueue();
+  setPage("queue");
+});
 document.getElementById("saveQueueBtn").addEventListener("click", saveQueue);
 document.getElementById("loadQueueBtn").addEventListener("click", loadQueue);
 deleteSelectedQueueBtn?.addEventListener("click", deleteSelectedQueueRows);
@@ -1522,11 +1652,19 @@ queueTbody.addEventListener("click", async (ev) => {
     openImageModal(getModalImageSrc(zoomImage));
     return;
   }
-  const tr = target.closest("tr[data-idx]");
-  if (!tr) return;
-  const idx = Number(tr.dataset.idx);
+  const card = target.closest("[data-idx]");
+  if (!card) return;
+  const idx = Number(card.dataset.idx);
+  if (target.closest(".queue-edit-btn")) {
+    card.querySelector(".queue-text")?.focus();
+    return;
+  }
+  if (target.closest(".queue-delete-btn")) {
+    deleteQueueCard(idx);
+    return;
+  }
   if (target.classList.contains("queue-media-upload")) {
-    const fileInput = tr.querySelector(".queue-media-file");
+    const fileInput = card.querySelector(".queue-media-file");
     const file = fileInput?.files?.[0];
     await uploadQueueMedia(idx, file);
     return;
@@ -1551,9 +1689,9 @@ queueTbody.addEventListener("click", async (ev) => {
 queueTbody.addEventListener("change", (ev) => {
   const target = ev.target;
   if (!(target instanceof HTMLElement)) return;
-  const tr = target.closest("tr[data-idx]");
-  if (!tr) return;
-  const idx = Number(tr.dataset.idx);
+  const card = target.closest("[data-idx]");
+  if (!card) return;
+  const idx = Number(card.dataset.idx);
   if (target instanceof HTMLSelectElement && target.classList.contains("queue-media-source")) {
     updateQueueMediaSource(idx, target.value || "none");
     return;

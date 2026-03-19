@@ -435,23 +435,38 @@
                 <button class="primary" id="saveQueueBtn">キューを保存</button>
               </div>
             </div>
-            <p class="helper" id="queueMessage">投稿計画ビルダーで作成した計画をキューに反映してください。</p>
-            <div class="plan-table-wrap">
-              <table class="plan-table">
-                <thead>
-                  <tr>
-                    <th>選択</th>
-                    <th>日時</th>
-                    <th>枠</th>
-                    <th>テーマ</th>
-                    <th>投稿文（編集可）</th>
-                    <th>投稿後リプ</th>
-                    <th>添付画像</th>
-                  </tr>
-                </thead>
-                <tbody id="queueTbody"></tbody>
-              </table>
+            <div class="queue-dashboard">
+              <div class="queue-kpis" id="queueKpis">
+                <article class="queue-kpi-card">
+                  <span>今日の投稿数</span>
+                  <strong id="queueTodayCount">0</strong>
+                  <small>本日予定のキュー</small>
+                </article>
+                <article class="queue-kpi-card">
+                  <span>キュー残数</span>
+                  <strong id="queueRemainingCount">0</strong>
+                  <small>未投稿の予約数</small>
+                </article>
+                <article class="queue-kpi-card accent">
+                  <span>投稿成功数</span>
+                  <strong id="queuePostedCount">0</strong>
+                  <small>投稿済みの記録</small>
+                </article>
+              </div>
+              <div class="queue-hero-card">
+                <div>
+                  <p class="queue-eyebrow">Queue First Dashboard</p>
+                  <h3>保存済みキューを、時間帯ごとに見やすく管理。</h3>
+                  <p>Morning / Noon / Evening を分けて、本文・画像・予約時刻をその場で整えられます。</p>
+                </div>
+                <div class="queue-hero-actions">
+                  <button class="primary queue-hero-primary" id="queueHeroBuildBtn">計画を作成</button>
+                  <button class="ghost" id="queueHeroApplyBtn">計画をキューへ反映</button>
+                </div>
+              </div>
             </div>
+            <p class="helper" id="queueMessage">投稿計画ビルダーで作成した計画をキューに反映してください。</p>
+            <div class="queue-board" id="queueTbody"></div>
             <p class="helper">投稿文欄をクリックすると、上部のX表示プレビューに反映されます。</p>
           </article>
         </div>
