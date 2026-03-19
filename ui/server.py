@@ -47,6 +47,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.x_autopost_tool.collectors import fetch_rss_items, filter_blocked
+from src.x_autopost_tool.content_types import build_evening_type_drafts, build_morning_type_drafts
 from src.x_autopost_tool.llm import build_post_drafts, normalize_x_post_text
 from src.x_autopost_tool.media_tools import (
     build_nano_banana_prompt_payload,
@@ -70,6 +71,7 @@ from src.x_autopost_tool.uniqueness import (
     append_history,
     duplicate_check,
     evening_duplicate_check,
+    history_content_types,
     history_fingerprints,
     loose_fingerprint,
     load_history,
@@ -1080,6 +1082,11 @@ def api_plan_preview():
     posted_noon_fp.update(f"loose:{fp}" for fp in history_fingerprints(history, slot="noon", mode="loose"))
     posted_evening_fp = {f"strict:{fp}" for fp in history_fingerprints(history, slot="evening", mode="strict")}
     posted_evening_fp.update(f"loose:{fp}" for fp in history_fingerprints(history, slot="evening", mode="loose"))
+    recent_content_types_by_slot = {
+        "morning": history_content_types(history, slot="morning", limit=6),
+        "noon": history_content_types(history, slot="noon", limit=6),
+        "evening": history_content_types(history, slot="evening", limit=6),
+    }
     total_days = _days_from_unit(unit, count)
     slots = config.required_daily_slots or ["morning", "noon", "evening"]
     items = fetch_rss_items(config.rss_feeds, max_items=config.max_input_items)
@@ -1129,20 +1136,28 @@ def api_plan_preview():
 
             if slot == "morning":
                 picked = None
+                picked_draft = None
                 morning_seed = d.toordinal() * 11 + i + generation_seed
-                morning_variant = (generation_nonce + i) % 3
-                morning_order = _shuffled_indices(len(MORNING_EVERGREEN_TOPICS), morning_seed)
-                for attempt, order_idx in enumerate(morning_order, start=1):
+                morning_drafts = build_morning_type_drafts(morning_seed, max_candidates=8)
+                for attempt, draft in enumerate(morning_drafts, start=1):
                     print(f"[UNIQUE RETRY] attempt={attempt}")
-                    candidate = _morning_evergreen_post(order_idx, variant=morning_variant)
+                    candidate = draft.text
                     print(f"[SEMANTIC RETRY] attempt={attempt}")
+                    recent_types = recent_content_types_by_slot["morning"][-1:]
+                    if draft.content_type and draft.content_type in recent_types:
+                        print(f"[UNIQUE REJECT] reason=content_type_repeat type={draft.content_type}")
+                        continue
                     if not _is_used_before(candidate, memory, posted_morning_fp, history=history, slot="morning"):
                         if not (_seen_keys(candidate) & local_fp):
                             _remember_seen(candidate, local_fp)
                             print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
                             semantic = semantic_duplicate_check(candidate, history, slot="morning")
                             print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
+                            if draft.content_type:
+                                print(f"[PICKED TYPE] type={draft.content_type}")
+                                recent_content_types_by_slot["morning"].append(draft.content_type)
                             picked = candidate
+                            picked_draft = draft
                             break
                 if not picked:
                     picked = _unique_or_fallback(
@@ -1161,7 +1176,11 @@ def api_plan_preview():
                         "date": d.isoformat(),
                         "time": slot_time,
                         "slot": slot,
-                        "theme": "デザイン基礎/応用（普遍）",
+                        "theme": {
+                            "basic": "basic / デザイン基礎・応用",
+                            "quote": "quote / 偉人・デザイナーの言葉",
+                        }.get(getattr(picked_draft, "content_type", ""), "basic / デザイン基礎・応用"),
+                        "content_type": getattr(picked_draft, "content_type", "basic"),
                         "text": text,
                         "refresh_mode": "",
                     }
@@ -1170,24 +1189,38 @@ def api_plan_preview():
 
             if slot == "evening":
                 picked = None
+                picked_draft = None
                 evening_seed = d.toordinal() * 17 + i + generation_seed
-                evening_variant = (generation_nonce + i + 1) % 3
-                evening_order = _shuffled_indices(len(EVENING_ARUARU_TOPICS), evening_seed)
-                for attempt, order_idx in enumerate(evening_order, start=1):
+                evening_drafts = build_evening_type_drafts(items, evening_seed, max_candidates=10)
+                for attempt, draft in enumerate(evening_drafts, start=1):
                     print(f"[UNIQUE RETRY] attempt={attempt}")
-                    candidate = _evening_aruaru_post(order_idx, variant=evening_variant)
+                    candidate = draft.text
                     print(f"[SEMANTIC RETRY] attempt={attempt}")
+                    recent_types = recent_content_types_by_slot["evening"][-2:]
+                    if draft.content_type and draft.content_type in recent_types:
+                        print(f"[UNIQUE REJECT] reason=content_type_repeat type={draft.content_type}")
+                        continue
                     if not _is_used_before(candidate, memory, posted_evening_fp, history=history, slot="evening"):
                         if not (_seen_keys(candidate) & local_fp):
                             _remember_seen(candidate, local_fp)
                             print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
                             semantic = semantic_duplicate_check(candidate, history, slot="evening")
                             print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
+                            if draft.content_type:
+                                print(f"[PICKED TYPE] type={draft.content_type}")
+                                recent_content_types_by_slot["evening"].append(draft.content_type)
+                            if draft.topic:
+                                print(f"[TOPIC] {draft.topic[:120]}")
+                            if draft.structure:
+                                print(f"[STRUCTURE] {draft.structure}")
+                            if draft.content_type == "trend" and draft.topic:
+                                print(f"[TREND SOURCE] {draft.topic[:120]}")
                             print(
                                 f"[EVENING PICKED] hook={semantic.candidate.hook[:60]} "
                                 f"structure={semantic.candidate.structure}"
                             )
                             picked = candidate
+                            picked_draft = draft
                             break
                 if not picked:
                     picked = _unique_or_fallback(
@@ -1208,7 +1241,12 @@ def api_plan_preview():
                         "date": d.isoformat(),
                         "time": slot_time,
                         "slot": slot,
-                        "theme": "共感/あるある（ゆるめ）",
+                        "theme": {
+                            "aruaru": "aruaru / あるある",
+                            "daily": "daily / 日常・実務",
+                            "trend": "trend / トレンド",
+                        }.get(getattr(picked_draft, "content_type", ""), "daily / 日常・実務"),
+                        "content_type": getattr(picked_draft, "content_type", "daily"),
                         "text": text,
                         "refresh_mode": "",
                     }
@@ -1282,7 +1320,8 @@ def api_plan_preview():
                     "date": d.isoformat(),
                     "time": slot_time,
                     "slot": slot,
-                    "theme": weekday_theme,
+                    "theme": "news / AIニュース + 今後の予測" if slot == "noon" else weekday_theme,
+                    "content_type": "news" if slot == "noon" else "",
                     "text": text,
                     "refresh_mode": "jit_noon" if (slot == "noon" and latest_share_mode) else "",
                 }

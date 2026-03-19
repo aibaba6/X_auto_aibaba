@@ -506,18 +506,31 @@ def history_topics(store: HistoryStore, slot: str | None = None) -> set[str]:
     return out
 
 
+def history_content_types(store: HistoryStore, slot: str | None = None, limit: int | None = None) -> list[str]:
+    relevant = [entry for entry in store.entries if not slot or str(entry.get("slot", "")).strip() == slot]
+    if limit is not None:
+        relevant = relevant[-limit:]
+    values: list[str] = []
+    for entry in relevant:
+        content_type = str(entry.get("content_type", "")).strip().lower()
+        if content_type:
+            values.append(content_type)
+    return values
+
+
 def semantic_summaries(store: HistoryStore, slot: str | None = None, limit: int = 8) -> list[str]:
     relevant = [entry for entry in store.entries if not slot or str(entry.get("slot", "")).strip() == slot]
     summaries: list[str] = []
     for entry in reversed(relevant[-limit:]):
+        content_type = str(entry.get("content_type", "")).strip()
         hook = str(entry.get("semantic_hook", "")).strip()
         topic = str(entry.get("semantic_topic", entry.get("topic", ""))).strip()
         claim = str(entry.get("semantic_claim", entry.get("core_claim", ""))).strip()
         takeaway = str(entry.get("semantic_takeaway", entry.get("action_takeaway", ""))).strip()
         pattern = str(entry.get("semantic_structure", entry.get("semantic_pattern", entry.get("pattern_id", "")))).strip()
-        if hook or topic or claim or takeaway:
+        if hook or topic or claim or takeaway or content_type:
             summaries.append(
-                " / ".join(part for part in [hook, topic, claim, takeaway, pattern] if part)
+                " / ".join(part for part in [content_type, hook, topic, claim, takeaway, pattern] if part)
             )
     return summaries
 
@@ -531,6 +544,7 @@ def append_history(
     tweet_id: str = "",
     posted_at: str = "",
     created_at: str = "",
+    content_type: str = "",
     topic: str = "",
     pattern_id: str = "",
 ) -> None:
@@ -550,6 +564,7 @@ def append_history(
             "fingerprint": sha1(strict_norm.encode("utf-8")).hexdigest(),
             "slot": slot,
             "source": source,
+            "content_type": content_type,
             "tweet_id": tweet_id,
             "created_at": created_at or posted_at,
             "posted_at": posted_at,

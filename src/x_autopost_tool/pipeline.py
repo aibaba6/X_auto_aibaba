@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from .collectors import fetch_rss_items, filter_blocked, rank_quote_candidates
+from .content_types import build_evening_type_drafts, build_morning_type_drafts
 from .llm import build_noon_news_candidates, build_post_drafts, build_quote_post, normalize_x_post_text
 from .media_tools import generate_image_with_freepik_mystic, generate_image_with_nanobanana, generate_image_with_nanobanana_pro_api
 from .models import ContentItem, DraftPost
@@ -17,6 +18,7 @@ from .uniqueness import (
     append_history,
     duplicate_check,
     evening_duplicate_check,
+    history_content_types,
     history_fingerprints,
     load_history,
     load_memory,
@@ -108,6 +110,20 @@ def _is_duplicate_candidate(
     return False
 
 
+def _content_type_allowed(content_type: str, recent_types: list[str], *, slot: str) -> bool:
+    normalized = (content_type or "").strip().lower()
+    if not normalized:
+        return True
+    recent = [value.strip().lower() for value in recent_types if value]
+    if not recent:
+        return True
+    window = 2 if slot == "evening" else 1
+    blocked = recent[-window:]
+    allowed = normalized not in blocked
+    print(f"[CONTENT TYPE] type={normalized} recent={','.join(blocked) or '-'} allowed={'yes' if allowed else 'no'}")
+    return allowed
+
+
 def _fallback_draft(item: ContentItem, slot: str, horizon: str) -> DraftPost:
     title = item.title.replace("\n", " ").strip()
     if len(title) > 48:
@@ -129,7 +145,14 @@ def _fallback_draft(item: ContentItem, slot: str, horizon: str) -> DraftPost:
             f"{title}の場面ほど、完璧な正解より続けられる改善を先に決めたほうが崩れにくい。"
             f"{horizon}で差になりやすいのは一度に抱え込まない設計。次に迷わない一言だけ残す。"
         )
-    return DraftPost(text=normalize_x_post_text(text, slot_name=slot), reason="fallback")
+    content_type = "news" if slot == "noon" else ("basic" if slot == "morning" else "daily")
+    return DraftPost(
+        text=normalize_x_post_text(text, slot_name=slot),
+        reason="fallback",
+        content_type=content_type,
+        topic=title,
+        structure="一言断言型",
+    )
 
 
 def _engagement_score(c) -> int:
@@ -437,6 +460,9 @@ def _post_due_queue_item(
         source="queue-post",
         tweet_id=tweet_id,
         posted_at=now.isoformat(),
+        content_type=str(item.get("content_type", "")).strip(),
+        topic=str(item.get("topic", "")).strip(),
+        pattern_id=str(item.get("pattern_id", "")).strip(),
     )
     save_history(history)
     item["posted"] = True
@@ -468,6 +494,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     posted_slot_fingerprints = history_fingerprints(history, slot=resolved_slot, mode="strict")
     posted_slot_loose_fingerprints = history_fingerprints(history, slot=resolved_slot, mode="loose")
     recent_semantic = semantic_summaries(history, slot=resolved_slot, limit=10)
+    recent_content_types = history_content_types(history, slot=resolved_slot, limit=6)
     memory_changed = False
     history_changed = False
     x = XClient()
@@ -547,6 +574,9 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                         source="noon-news",
                         tweet_id=tweet_id,
                         posted_at=now.isoformat(),
+                        content_type="news",
+                        topic=getattr(picked_noon, "topic", ""),
+                        pattern_id=getattr(picked_noon, "structure", ""),
                     )
                     posted_slot_fingerprints.add(strict_fingerprint(picked_noon.text))
                     posted_slot_loose_fingerprints.add(loose_fingerprint(picked_noon.text))
@@ -558,25 +588,37 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         return
 
     print("[2/5] 投稿案生成")
-    drafts = build_post_drafts(
-        model=config.model,
-        items=items,
-        tone=config.tone,
-        audience=config.audience,
-        prediction_horizon=config.prediction_horizon,
-        post_style_template=config.post_style_template,
-        voice_guide=config.voice_guide,
-        style_reference_posts=config.style_reference_posts,
-        weekday_theme=weekday_theme,
-        slot_name=resolved_slot,
-        slot_style=slot_style,
-        slot_min_chars=slot_min_chars,
-        slot_max_chars=slot_max_chars,
-        max_posts=slot_posts_per_run,
-        knowledge_snippets=pdf_knowledge,
-        recent_self_posts=recent_self_posts,
-        recent_semantic_summaries=recent_semantic,
-    )
+    if resolved_slot == "morning":
+        drafts = build_morning_type_drafts(
+            seed=now.toordinal() * 7 + len(history.entries),
+            max_candidates=max(6, slot_posts_per_run * 4),
+        )
+    elif resolved_slot == "evening":
+        drafts = build_evening_type_drafts(
+            items,
+            seed=now.toordinal() * 13 + len(history.entries),
+            max_candidates=max(9, slot_posts_per_run * 5),
+        )
+    else:
+        drafts = build_post_drafts(
+            model=config.model,
+            items=items,
+            tone=config.tone,
+            audience=config.audience,
+            prediction_horizon=config.prediction_horizon,
+            post_style_template=config.post_style_template,
+            voice_guide=config.voice_guide,
+            style_reference_posts=config.style_reference_posts,
+            weekday_theme=weekday_theme,
+            slot_name=resolved_slot,
+            slot_style=slot_style,
+            slot_min_chars=slot_min_chars,
+            slot_max_chars=slot_max_chars,
+            max_posts=slot_posts_per_run,
+            knowledge_snippets=pdf_knowledge,
+            recent_self_posts=recent_self_posts,
+            recent_semantic_summaries=recent_semantic,
+        )
     if not drafts and items:
         print("[FALLBACK] 生成失敗のためテンプレ投稿を作成")
         drafts = [_fallback_draft(items[0], resolved_slot, config.prediction_horizon)]
@@ -585,6 +627,9 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     for attempt, d in enumerate(drafts, start=1):
         print(f"[UNIQUE RETRY] attempt={attempt}")
         print(f"[SEMANTIC RETRY] attempt={attempt}")
+        if d.content_type and not _content_type_allowed(d.content_type, recent_content_types, slot=resolved_slot):
+            print(f"[UNIQUE REJECT] reason=content_type_repeat type={d.content_type}")
+            continue
         ok, reasons = validate_post_draft(d, config, min_chars=slot_min_chars, max_chars=slot_max_chars)
         if ok:
             if _is_duplicate_candidate(
@@ -599,6 +644,16 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                 check_posted_history=True,
             ):
                 continue
+            if d.content_type:
+                print(f"[PICKED TYPE] type={d.content_type}")
+            if d.topic:
+                print(f"[TOPIC] {d.topic[:120]}")
+            if d.claim:
+                print(f"[CLAIM] {d.claim[:120]}")
+            if d.structure:
+                print(f"[STRUCTURE] {d.structure}")
+            if d.content_type == "trend" and d.topic:
+                print(f"[TREND SOURCE] {d.topic[:120]}")
             print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(d.text)}")
             semantic = semantic_duplicate_check(d.text, history, slot=resolved_slot)
             print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
@@ -609,6 +664,8 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                     f"claim={semantic.candidate.claim[:60]}"
                 )
             passed_drafts.append(d)
+            if d.content_type:
+                recent_content_types.append(d.content_type)
         else:
             print(f"[DROP DRAFT] {','.join(reasons)}")
     if not passed_drafts:
@@ -678,6 +735,9 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             source="main-post",
             tweet_id=tweet_id,
             posted_at=now.isoformat(),
+            content_type=d.content_type,
+            topic=d.topic,
+            pattern_id=d.structure,
         )
         posted_slot_fingerprints.add(strict_fingerprint(d.text))
         posted_slot_loose_fingerprints.add(loose_fingerprint(d.text))
@@ -740,6 +800,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             source="quote-post",
             tweet_id=quote_id,
             posted_at=now.isoformat(),
+            content_type="quote",
         )
         history_changed = True
         posted_quotes += 1

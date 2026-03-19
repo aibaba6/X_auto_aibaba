@@ -15,6 +15,10 @@ class ContentItem:
 class DraftPost:
     text: str
     reason: str
+    content_type: str = ""
+    topic: str = ""
+    claim: str = ""
+    structure: str = ""
 
 
 @dataclass
