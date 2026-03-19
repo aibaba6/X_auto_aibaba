@@ -74,6 +74,8 @@ from src.x_autopost_tool.uniqueness import (
     load_history,
     load_memory,
     register_text,
+    semantic_duplicate_check,
+    semantic_summaries,
     save_history,
     save_memory,
     strict_fingerprint,
@@ -373,7 +375,13 @@ def _remember_seen(text: str, seen_fingerprints: set[str]) -> None:
     seen_fingerprints.update(_seen_keys(text))
 
 
-def _is_used_before(text: str, memory: MemoryStore, seen_fingerprints: set[str]) -> bool:
+def _is_used_before(
+    text: str,
+    memory: MemoryStore,
+    seen_fingerprints: set[str],
+    history=None,
+    slot: str = "",
+) -> bool:
     value = (text or "").strip()
     if not value:
         return False
@@ -390,6 +398,11 @@ def _is_used_before(text: str, memory: MemoryStore, seen_fingerprints: set[str])
     if f"loose:{result.loose_fingerprint}" in seen_fingerprints:
         print("[UNIQUE REJECT] reason=history_loose_duplicate")
         return True
+    if history is not None:
+        semantic = semantic_duplicate_check(value, history, slot=slot or None)
+        if semantic.duplicate:
+            print(f"[SEMANTIC REJECT] reason={semantic.reason}")
+            return True
     return False
 
 
@@ -562,13 +575,17 @@ def _unique_or_fallback(
     memory: MemoryStore,
     local_fp: set[str],
     history_fp: set[str] | None = None,
+    history=None,
 ) -> str:
     used_fp = history_fp or set()
     candidate = text.strip()
-    if candidate and not _is_used_before(candidate, memory, used_fp):
+    if candidate and not _is_used_before(candidate, memory, used_fp, history=history, slot=slot):
         if not (_seen_keys(candidate) & local_fp):
             _remember_seen(candidate, local_fp)
             print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
+            semantic = semantic_duplicate_check(candidate, history, slot=slot) if history is not None else None
+            if semantic is not None:
+                print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
             return candidate
 
     if slot == "morning":
@@ -583,17 +600,21 @@ def _unique_or_fallback(
         candidate = _jit_noon_placeholder(30)
     else:
         candidate = _evening_fallback_post(d)
-        if _is_used_before(candidate, memory, used_fp):
+        if _is_used_before(candidate, memory, used_fp, history=history, slot=slot):
             for i in range(len(EVENING_FALLBACK_OPENERS) * len(EVENING_FALLBACK_BODIES)):
                 alt = _evening_fallback_post(d, variant=i + 1)
-                if not _is_used_before(alt, memory, used_fp):
+                if not _is_used_before(alt, memory, used_fp, history=history, slot=slot):
                     candidate = alt
                     break
-    if _is_used_before(candidate, memory, used_fp) or (_seen_keys(candidate) & local_fp):
+    if _is_used_before(candidate, memory, used_fp, history=history, slot=slot) or (_seen_keys(candidate) & local_fp):
         print(f"[UNIQUE HOLD] reason=no_unique_candidate slot={slot}")
+        print(f"[SEMANTIC HOLD] reason=no_semantically_unique_candidate slot={slot}")
         return ""
     _remember_seen(candidate, local_fp)
     print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
+    if history is not None:
+        semantic = semantic_duplicate_check(candidate, history, slot=slot)
+        print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
     return candidate
 
 
@@ -1043,6 +1064,11 @@ def api_plan_preview():
             if str(entry.get("slot", "")).strip() == "evening" and str(entry.get("text", "")).strip()
         ][:8],
     }
+    recent_semantics_by_slot = {
+        "morning": semantic_summaries(history, slot="morning", limit=8),
+        "noon": semantic_summaries(history, slot="noon", limit=8),
+        "evening": semantic_summaries(history, slot="evening", limit=8),
+    }
 
     plan = []
     local_fp: set[str] = set()
@@ -1072,14 +1098,26 @@ def api_plan_preview():
                 for attempt, order_idx in enumerate(morning_order, start=1):
                     print(f"[UNIQUE RETRY] attempt={attempt}")
                     candidate = _morning_evergreen_post(order_idx, variant=morning_variant)
-                    if not _is_used_before(candidate, memory, posted_morning_fp):
+                    print(f"[SEMANTIC RETRY] attempt={attempt}")
+                    if not _is_used_before(candidate, memory, posted_morning_fp, history=history, slot="morning"):
                         if not (_seen_keys(candidate) & local_fp):
                             _remember_seen(candidate, local_fp)
                             print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
+                            semantic = semantic_duplicate_check(candidate, history, slot="morning")
+                            print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
                             picked = candidate
                             break
                 if not picked:
-                    picked = _unique_or_fallback("", "morning", d, weekday_theme, memory, local_fp, posted_morning_fp)
+                    picked = _unique_or_fallback(
+                        "",
+                        "morning",
+                        d,
+                        weekday_theme,
+                        memory,
+                        local_fp,
+                        posted_morning_fp,
+                        history=history,
+                    )
                 text = picked
                 plan.append(
                     {
@@ -1101,14 +1139,26 @@ def api_plan_preview():
                 for attempt, order_idx in enumerate(evening_order, start=1):
                     print(f"[UNIQUE RETRY] attempt={attempt}")
                     candidate = _evening_aruaru_post(order_idx, variant=evening_variant)
-                    if not _is_used_before(candidate, memory, posted_evening_fp):
+                    print(f"[SEMANTIC RETRY] attempt={attempt}")
+                    if not _is_used_before(candidate, memory, posted_evening_fp, history=history, slot="evening"):
                         if not (_seen_keys(candidate) & local_fp):
                             _remember_seen(candidate, local_fp)
                             print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
+                            semantic = semantic_duplicate_check(candidate, history, slot="evening")
+                            print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
                             picked = candidate
                             break
                 if not picked:
-                    picked = _unique_or_fallback("", "evening", d, weekday_theme, memory, local_fp, posted_evening_fp)
+                    picked = _unique_or_fallback(
+                        "",
+                        "evening",
+                        d,
+                        weekday_theme,
+                        memory,
+                        local_fp,
+                        posted_evening_fp,
+                        history=history,
+                    )
                 text = picked
                 plan.append(
                     {
@@ -1129,6 +1179,7 @@ def api_plan_preview():
                 if items and os.getenv("OPENAI_API_KEY"):
                     for attempt in range(4):
                         print(f"[UNIQUE RETRY] attempt={attempt + 1}")
+                        print(f"[SEMANTIC RETRY] attempt={attempt + 1}")
                         subset = _rotated_items(items, seed=(i * 7 + attempt * 3 + generation_seed), take=8)
                         try:
                             drafts = build_post_drafts(
@@ -1148,15 +1199,18 @@ def api_plan_preview():
                                 max_posts=3,
                                 knowledge_snippets=slot_pdf_knowledge,
                                 recent_self_posts=recent_posts_by_slot.get(slot, []),
+                                recent_semantic_summaries=recent_semantics_by_slot.get(slot, []),
                             )
                             unique = None
                             rotation = _rotation_start(generation_nonce + i + attempt, len(drafts))
                             ordered_drafts = drafts[rotation:] + drafts[:rotation]
                             for dft in ordered_drafts:
-                                if not _is_used_before(dft.text, memory, posted_noon_fp):
+                                if not _is_used_before(dft.text, memory, posted_noon_fp, history=history, slot=slot):
                                     if not (_seen_keys(dft.text) & local_fp):
                                         _remember_seen(dft.text, local_fp)
                                         print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(dft.text)}")
+                                        semantic = semantic_duplicate_check(dft.text, history, slot=slot)
+                                        print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
                                         unique = dft.text
                                         break
                             if unique:
@@ -1174,9 +1228,11 @@ def api_plan_preview():
                         memory,
                         local_fp,
                         history_fp,
+                        history=history,
                     )
                 if not text:
                     print(f"[UNIQUE HOLD] reason=no_unique_candidate slot={slot} date={d.isoformat()}")
+                    print(f"[SEMANTIC HOLD] reason=no_semantically_unique_candidate slot={slot} date={d.isoformat()}")
 
             plan.append(
                 {

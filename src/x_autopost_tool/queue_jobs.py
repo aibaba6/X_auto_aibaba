@@ -8,7 +8,16 @@ from .llm import build_noon_news_candidates
 from .queue_store import load_queue_items, save_queue_items
 from .schedule_utils import now_local, parse_scheduled_datetime
 from .settings import AppConfig
-from .uniqueness import duplicate_check, load_history, load_memory, register_text, save_memory, strict_fingerprint
+from .uniqueness import (
+    duplicate_check,
+    load_history,
+    load_memory,
+    register_text,
+    save_memory,
+    semantic_duplicate_check,
+    semantic_summaries,
+    strict_fingerprint,
+)
 
 def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False) -> int:
     path = Path(queue_path)
@@ -33,6 +42,7 @@ def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False
         for entry in reversed(history.entries)
         if str(entry.get("slot", "")).strip() == "noon" and str(entry.get("text", "")).strip()
     ][:8]
+    recent_noon_semantics = semantic_summaries(history, slot="noon", limit=8)
     source_items = fetch_rss_items(config.rss_feeds, max_items=config.max_input_items)
     source_items = filter_blocked(source_items, config.blocked_keywords)
     if not source_items:
@@ -65,6 +75,7 @@ def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False
             prediction_horizon=config.prediction_horizon,
             weekday_theme=config.weekly_themes.get(now.strftime("%A").lower(), "通常テーマ"),
             recent_self_posts=recent_noon_posts,
+            recent_semantic_summaries=recent_noon_semantics,
             max_candidates=4,
         )
         if not drafts:
@@ -75,6 +86,7 @@ def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False
         reason = ""
         for attempt, draft in enumerate(drafts, start=1):
             print(f"[UNIQUE RETRY] attempt={attempt}")
+            print(f"[SEMANTIC RETRY] attempt={attempt}")
             result = duplicate_check(draft.text, memory)
             if result.strict_duplicate:
                 print("[UNIQUE REJECT] reason=strict_duplicate")
@@ -82,12 +94,18 @@ def refresh_noon_queue(config: AppConfig, queue_path: str, dry_run: bool = False
             if result.loose_duplicate:
                 print("[UNIQUE REJECT] reason=loose_duplicate")
                 continue
+            semantic = semantic_duplicate_check(draft.text, history, slot="noon")
+            if semantic.duplicate:
+                print(f"[SEMANTIC REJECT] reason={semantic.reason}")
+                continue
             text = draft.text
             reason = draft.reason or "noon-news"
             print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(text)}")
+            print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
             break
         if not text:
             print(f"[UNIQUE HOLD] reason=no_unique_candidate schedule={schedule_at}")
+            print(f"[SEMANTIC HOLD] reason=no_semantically_unique_candidate schedule={schedule_at}")
             continue
         item["text"] = text
         item["source_tweet_id"] = ""

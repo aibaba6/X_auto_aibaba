@@ -21,6 +21,8 @@ from .uniqueness import (
     load_memory,
     loose_fingerprint,
     register_text,
+    semantic_duplicate_check,
+    semantic_summaries,
     save_history,
     save_memory,
     strict_fingerprint,
@@ -65,6 +67,8 @@ def _is_duplicate_candidate(
     text: str,
     memory,
     *,
+    history=None,
+    slot: str = "",
     recent_strict: set[str],
     recent_loose: set[str],
     posted_strict: set[str] | None = None,
@@ -90,6 +94,11 @@ def _is_duplicate_candidate(
     if check_posted_history and posted_loose is not None and result.loose_fingerprint in posted_loose:
         print("[UNIQUE REJECT] reason=posted_loose_duplicate")
         return True
+    if history is not None:
+        semantic = semantic_duplicate_check(value, history, slot=slot or None)
+        if semantic.duplicate:
+            print(f"[SEMANTIC REJECT] reason={semantic.reason}")
+            return True
     return False
 
 
@@ -329,6 +338,7 @@ def _post_due_queue_item(
         history = load_history(config.post_history_path)
         posted_slot_fingerprints = history_fingerprints(history, slot=resolved_slot, mode="strict")
         posted_slot_loose_fingerprints = history_fingerprints(history, slot=resolved_slot, mode="loose")
+        recent_semantic = semantic_summaries(history, slot=resolved_slot, limit=8)
         recent_strict = _fingerprints(recent_self_posts or [], mode="strict")
         recent_loose = _fingerprints(recent_self_posts or [], mode="loose")
         source_items = fetch_rss_items(config.rss_feeds, max_items=config.max_input_items)
@@ -342,14 +352,18 @@ def _post_due_queue_item(
             prediction_horizon=config.prediction_horizon,
             weekday_theme=weekday_theme,
             recent_self_posts=recent_self_posts,
+            recent_semantic_summaries=recent_semantic,
             max_candidates=4,
         )
         picked = None
         for attempt, draft in enumerate(drafts, start=1):
             print(f"[UNIQUE RETRY] attempt={attempt}")
+            print(f"[SEMANTIC RETRY] attempt={attempt}")
             if _is_duplicate_candidate(
                 draft.text,
                 memory,
+                history=history,
+                slot=resolved_slot,
                 recent_strict=recent_strict,
                 recent_loose=recent_loose,
                 posted_strict=posted_slot_fingerprints,
@@ -358,6 +372,8 @@ def _post_due_queue_item(
                 continue
             picked = draft
             print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(draft.text)}")
+            semantic = semantic_duplicate_check(draft.text, history, slot=resolved_slot)
+            print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
             break
         if picked:
             text = picked.text
@@ -369,6 +385,7 @@ def _post_due_queue_item(
             )
         else:
             print(f"[UNIQUE HOLD] reason=no_unique_candidate slot=noon id={item_id}")
+            print(f"[SEMANTIC HOLD] reason=no_semantically_unique_candidate slot=noon id={item_id}")
     if not text:
         print(
             "[QUEUE HOLD] "
@@ -444,6 +461,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     history = load_history(config.post_history_path)
     posted_slot_fingerprints = history_fingerprints(history, slot=resolved_slot, mode="strict")
     posted_slot_loose_fingerprints = history_fingerprints(history, slot=resolved_slot, mode="loose")
+    recent_semantic = semantic_summaries(history, slot=resolved_slot, limit=10)
     memory_changed = False
     history_changed = False
     x = XClient()
@@ -484,14 +502,18 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             prediction_horizon=config.prediction_horizon,
             weekday_theme=weekday_theme,
             recent_self_posts=recent_self_posts,
+            recent_semantic_summaries=recent_semantic,
             max_candidates=max(4, slot_posts_per_run * 3),
         )
         picked_noon = None
         for attempt, noon_draft in enumerate(noon_candidates, start=1):
             print(f"[UNIQUE RETRY] attempt={attempt}")
+            print(f"[SEMANTIC RETRY] attempt={attempt}")
             if _is_duplicate_candidate(
                 noon_draft.text,
                 memory,
+                history=history,
+                slot=resolved_slot,
                 recent_strict=recent_post_fingerprints,
                 recent_loose=recent_post_loose_fingerprints,
                 posted_strict=posted_slot_fingerprints,
@@ -500,6 +522,8 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                 continue
             picked_noon = noon_draft
             print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(noon_draft.text)}")
+            semantic = semantic_duplicate_check(noon_draft.text, history, slot=resolved_slot)
+            print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
             break
         if picked_noon:
             if config.dry_run:
@@ -524,6 +548,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                     print(f"noon news posted: {tweet_id}")
                     return
         print("[UNIQUE HOLD] reason=no_unique_candidate slot=noon")
+        print("[SEMANTIC HOLD] reason=no_semantically_unique_candidate slot=noon")
         return
 
     print("[2/5] 投稿案生成")
@@ -544,6 +569,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         max_posts=slot_posts_per_run,
         knowledge_snippets=pdf_knowledge,
         recent_self_posts=recent_self_posts,
+        recent_semantic_summaries=recent_semantic,
     )
     if not drafts and items:
         print("[FALLBACK] 生成失敗のためテンプレ投稿を作成")
@@ -552,11 +578,14 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     passed_drafts = []
     for attempt, d in enumerate(drafts, start=1):
         print(f"[UNIQUE RETRY] attempt={attempt}")
+        print(f"[SEMANTIC RETRY] attempt={attempt}")
         ok, reasons = validate_post_draft(d, config, min_chars=slot_min_chars, max_chars=slot_max_chars)
         if ok:
             if _is_duplicate_candidate(
                 d.text,
                 memory,
+                history=history,
+                slot=resolved_slot,
                 recent_strict=recent_post_fingerprints,
                 recent_loose=recent_post_loose_fingerprints,
                 posted_strict=posted_slot_fingerprints,
@@ -565,11 +594,14 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             ):
                 continue
             print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(d.text)}")
+            semantic = semantic_duplicate_check(d.text, history, slot=resolved_slot)
+            print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
             passed_drafts.append(d)
         else:
             print(f"[DROP DRAFT] {','.join(reasons)}")
     if not passed_drafts:
         print(f"[UNIQUE HOLD] reason=no_unique_candidate slot={resolved_slot}")
+        print(f"[SEMANTIC HOLD] reason=no_semantically_unique_candidate slot={resolved_slot}")
         return
 
     print("[3/5] 通常投稿")
@@ -670,6 +702,8 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         if _is_duplicate_candidate(
             quote_text,
             memory,
+            history=history,
+            slot=resolved_slot,
             recent_strict=recent_post_fingerprints,
             recent_loose=recent_post_loose_fingerprints,
             check_posted_history=False,

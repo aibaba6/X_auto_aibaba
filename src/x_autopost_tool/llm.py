@@ -254,6 +254,7 @@ def build_post_drafts(
     max_posts: int,
     knowledge_snippets: list[str] | None = None,
     recent_self_posts: list[str] | None = None,
+    recent_semantic_summaries: list[str] | None = None,
 ) -> list[DraftPost]:
     candidate_count = max(max_posts * 4, 6)
     payload = [
@@ -267,6 +268,7 @@ def build_post_drafts(
 
     ksn = knowledge_snippets or []
     recent_posts = recent_self_posts or []
+    recent_semantics = recent_semantic_summaries or []
 
     prompt = f"""
 対象読者: {audience}
@@ -277,6 +279,7 @@ def build_post_drafts(
 文体参照（過去投稿サンプル）: {json.dumps(style_reference_posts[:6], ensure_ascii=False)}
 PDFストック知見（参考）: {json.dumps(ksn[:4], ensure_ascii=False)}
 直近の自分の投稿（重複回避用）: {json.dumps(recent_posts[:8], ensure_ascii=False)}
+直近投稿の意味要約（避けるべきテーマ/主張/結論）: {json.dumps(recent_semantics[:8], ensure_ascii=False)}
 曜日テーマ: {weekday_theme}
 投稿枠: {slot_name}
 投稿枠ルール: {slot_style}
@@ -298,6 +301,8 @@ PDFストック知見（参考）: {json.dumps(ksn[:4], ensure_ascii=False)}
 ただし、直近の自分の投稿と同じ切り口・同じ主張・同じ言い回しは避けること。
 書き出し、論点の順序、比較の置き方、締め方、タグの組み合わせを意図的に変え、各案を明確に別物にすること。
 最近使った構成の言い換えだけで済ませないこと。同じ意味・同じ展開の再表現は禁止。
+直近の意味要約にあるテーマ、状況設定、結論、行動提案を繰り返さないこと。
+同じネタの文体違いは候補として数えないこと。
 改行で読みやすくすること（2-4段落、1段落1-2文）。
 必要に応じて箇条書きは1-3項目まで（長い箇条書きは禁止）。
 中黒（・）や短い記号で読みやすくしてよい。
@@ -374,6 +379,7 @@ def build_noon_news_candidates(
     prediction_horizon: str,
     weekday_theme: str,
     recent_self_posts: list[str] | None = None,
+    recent_semantic_summaries: list[str] | None = None,
     max_candidates: int = 4,
 ) -> list[DraftPost]:
     payload = [
@@ -393,6 +399,7 @@ def build_noon_news_candidates(
 曜日テーマ: {weekday_theme}
 予測レンジ: {prediction_horizon}
 直近の自分の投稿（重複回避用）: {json.dumps((recent_self_posts or [])[:6], ensure_ascii=False)}
+直近投稿の意味要約（避けるべきテーマ/主張/結論）: {json.dumps((recent_semantic_summaries or [])[:6], ensure_ascii=False)}
 
 以下のニュース候補を材料に、昼枠向けのX投稿文を{max_candidates}本作成してください。
 - 日本語90-180文字
@@ -407,6 +414,7 @@ def build_noon_news_candidates(
 - 同じ語尾を連続させない
 - 各案で書き出し、論点順、予測の切り口、行動提案を明確に変えること
 - 似た文面の言い換えを複数返さないこと
+- 直近の昼投稿と同じニュース論点、同じ結論、同じ行動提案を繰り返さないこと
 - 2-4段落、必要なら短い箇条書き1-2項目
 - ハッシュタグは文末に2-3個
 - JSONのみで返す: {{"posts":[{{"text":"...","reason":"..."}}]}}
@@ -446,6 +454,7 @@ def build_noon_news_post(
     prediction_horizon: str,
     weekday_theme: str,
     recent_self_posts: list[str] | None = None,
+    recent_semantic_summaries: list[str] | None = None,
 ) -> DraftPost | None:
     candidates = build_noon_news_candidates(
         model=model,
@@ -455,6 +464,7 @@ def build_noon_news_post(
         prediction_horizon=prediction_horizon,
         weekday_theme=weekday_theme,
         recent_self_posts=recent_self_posts,
+        recent_semantic_summaries=recent_semantic_summaries,
         max_candidates=4,
     )
     return candidates[0] if candidates else None
