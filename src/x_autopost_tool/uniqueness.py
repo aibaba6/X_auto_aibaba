@@ -19,8 +19,8 @@ PUNCT_LOOSE_RE = re.compile(r"[^0-9a-zA-Zぁ-んァ-ン一-龠]+")
 TAG_SPLIT_RE = re.compile(r"#([^\s#]+)")
 SENTENCE_SPLIT_RE = re.compile(r"(?:\n+|(?<=[。！？!?]))")
 JP_TOKEN_RE = re.compile(r"[ぁ-んァ-ン一-龠a-z0-9]{2,}")
-ACTION_HINT_RE = re.compile(r"(行動|今日は|今週|先に|まず|1つ|ひとつ|試す|比較|確認|メモ|見直|整え|固定|絞)")
-FILLER_RE = re.compile(r"(です|ます|でした|ですね|ですよね|だけ|こと|もの|よう|ため|ので|から|まず|先に|今日は|今週)")
+ACTION_HINT_RE = re.compile(r"(行動|先に|まず|1つ|ひとつ|試す|比較|確認|メモ|見直|整え|固定|絞|減ら|増や|置く|残す|決める)")
+FILLER_RE = re.compile(r"(です|ます|でした|ですね|ですよね|だけ|こと|もの|よう|ため|ので|から|まず|先に|今日|今週|朝)")
 STOPWORDS = {
     "これ",
     "それ",
@@ -54,13 +54,15 @@ class DuplicateCheckResult:
 
 @dataclass
 class SemanticSignature:
+    hook: str
     topic: str
-    pattern: str
-    core_claim: str
-    action_takeaway: str
+    claim: str
+    structure: str
+    takeaway: str
+    hook_key: str
     topic_key: str
     claim_key: str
-    action_key: str
+    takeaway_key: str
     semantic_fingerprint: str
 
 
@@ -158,17 +160,33 @@ def _semantic_pattern(sentences: list[str]) -> str:
     if not sentences:
         return "empty"
     first = sentences[0]
-    last = sentences[-1]
-    has_scene = any(k in first for k in ["とき", "日", "夕方", "朝", "依頼", "判断", "締切", "修正"])
-    has_action = any(ACTION_HINT_RE.search(s) for s in sentences[1:]) or bool(ACTION_HINT_RE.search(last))
-    has_compare = any("より" in s or "だけ" in s or "絞" in s for s in sentences)
-    pattern = ["scene" if has_scene else "direct", "compare" if has_compare else "insight", "action" if has_action else "close"]
-    return ">".join(pattern)
+    joined = " ".join(sentences)
+    if "失敗" in joined or "違う" in joined or "ズレ" in joined:
+        return "失敗型"
+    if "より" in joined or "比較" in joined:
+        return "比較型"
+    if any(k in first for k in ["とき", "依頼", "締切", "夕方", "朝", "場面", "状況"]):
+        return "問題提起型"
+    if len(first) <= 20:
+        return "一言断言型"
+    return "気づき型"
+
+
+def _semantic_topic_text(hook: str, claim: str) -> str:
+    tokens: list[str] = []
+    for token in _semantic_tokens(f"{hook} {claim}"):
+        stem = FILLER_RE.sub("", token).strip()
+        if len(stem) < 2 or stem in tokens:
+            continue
+        tokens.append(stem)
+        if len(tokens) >= 3:
+            break
+    return " / ".join(tokens) or claim[:28] or hook[:28]
 
 
 def semantic_signature(text: str) -> SemanticSignature:
     sentences = _semantic_sentences(text)
-    topic = sentences[0] if sentences else _body_without_tags(text)[:60]
+    hook = sentences[0] if sentences else _body_without_tags(text)[:60]
     action_sentence = ""
     for sentence in reversed(sentences):
         if ACTION_HINT_RE.search(sentence):
@@ -176,29 +194,34 @@ def semantic_signature(text: str) -> SemanticSignature:
             break
     if not action_sentence and len(sentences) >= 2:
         action_sentence = sentences[-1]
-    core_claim = sentences[1] if len(sentences) >= 2 else topic
-    if action_sentence and core_claim == action_sentence and len(sentences) >= 3:
-        core_claim = sentences[-2]
-    topic_key = _semantic_key(topic, limit=6)
-    claim_key = _semantic_key(core_claim, limit=7)
-    action_key = _semantic_key(action_sentence, limit=6)
-    pattern = _semantic_pattern(sentences)
-    composite = "|".join([topic_key, claim_key, action_key, pattern])
+    claim = sentences[1] if len(sentences) >= 2 else hook
+    if action_sentence and claim == action_sentence and len(sentences) >= 3:
+        claim = sentences[-2]
+    topic = _semantic_topic_text(hook, claim)
+    structure = _semantic_pattern(sentences)
+    hook_key = _semantic_key(hook, limit=6)
+    topic_key = _semantic_key(topic, limit=4)
+    claim_key = _semantic_key(claim, limit=7)
+    takeaway_key = _semantic_key(action_sentence, limit=6)
+    composite = "|".join([hook_key, topic_key, claim_key, takeaway_key, structure])
     signature = SemanticSignature(
+        hook=hook.strip(),
         topic=topic.strip(),
-        pattern=pattern,
-        core_claim=core_claim.strip(),
-        action_takeaway=action_sentence.strip(),
+        claim=claim.strip(),
+        structure=structure,
+        takeaway=action_sentence.strip(),
+        hook_key=hook_key,
         topic_key=topic_key,
         claim_key=claim_key,
-        action_key=action_key,
+        takeaway_key=takeaway_key,
         semantic_fingerprint=sha1(composite.encode("utf-8")).hexdigest(),
     )
     print(
         "[SEMANTIC SUMMARY] "
+        f"hook={signature.hook[:80]} "
         f"topic={signature.topic[:80]} "
-        f"claim={signature.core_claim[:80]} "
-        f"takeaway={signature.action_takeaway[:80]}"
+        f"claim={signature.claim[:80]} "
+        f"takeaway={signature.takeaway[:80]}"
     )
     return signature
 
@@ -262,26 +285,34 @@ def semantic_duplicate_check(
     relevant_entries = relevant_entries[-recent_limit:]
     print(f"[SEMANTIC LOAD] history_count={len(relevant_entries)}")
     for entry in reversed(relevant_entries):
+        hook_key = str(entry.get("semantic_hook_key", "")).strip()
         topic_key = str(entry.get("semantic_topic_key", "")).strip()
         claim_key = str(entry.get("semantic_claim_key", "")).strip()
-        action_key = str(entry.get("semantic_action_key", "")).strip()
-        pattern = str(entry.get("semantic_pattern", "")).strip()
+        takeaway_key = str(entry.get("semantic_takeaway_key", entry.get("semantic_action_key", ""))).strip()
+        structure = str(entry.get("semantic_structure", entry.get("semantic_pattern", ""))).strip()
+        entry_hook = str(entry.get("semantic_hook", "")).strip()
         entry_topic = str(entry.get("semantic_topic", entry.get("topic", ""))).strip()
-        entry_claim = str(entry.get("core_claim", "")).strip()
-        entry_takeaway = str(entry.get("action_takeaway", "")).strip()
+        entry_claim = str(entry.get("semantic_claim", entry.get("core_claim", ""))).strip()
+        entry_takeaway = str(entry.get("semantic_takeaway", entry.get("action_takeaway", ""))).strip()
+        hook_dup = bool(hook_key and hook_key == candidate.hook_key)
         topic_dup = bool(topic_key and topic_key == candidate.topic_key)
         claim_dup = bool(claim_key and claim_key == candidate.claim_key)
-        action_dup = bool(action_key and action_key == candidate.action_key)
+        takeaway_dup = bool(takeaway_key and takeaway_key == candidate.takeaway_key)
+        hook_close = _token_overlap_score(candidate.hook, entry_hook) >= 0.76
         topic_close = _token_overlap_score(candidate.topic, entry_topic) >= 0.72
-        claim_close = _token_overlap_score(candidate.core_claim, entry_claim) >= 0.72
-        action_close = _token_overlap_score(candidate.action_takeaway, entry_takeaway) >= 0.7
-        same_pattern = bool(pattern and pattern == candidate.pattern)
+        claim_close = _token_overlap_score(candidate.claim, entry_claim) >= 0.72
+        takeaway_close = _token_overlap_score(candidate.takeaway, entry_takeaway) >= 0.7
+        same_structure = bool(structure and structure == candidate.structure)
         is_duplicate = (
-            (topic_dup and claim_dup)
-            or (topic_dup and action_dup)
+            hook_dup
+            or claim_dup
+            or (hook_close and topic_close)
+            or topic_dup
+            or claim_close
             or (topic_close and claim_close)
-            or (claim_dup and action_dup and same_pattern)
-            or (topic_close and claim_close and action_close)
+            or (topic_dup and takeaway_dup)
+            or (claim_dup and takeaway_dup and same_structure)
+            or (topic_close and claim_close and takeaway_close)
         )
         print(
             "[SEMANTIC CHECK] "
@@ -289,13 +320,13 @@ def semantic_duplicate_check(
             f"duplicate={'yes' if is_duplicate else 'no'}"
         )
         if is_duplicate:
-            reason = "same_topic_claim"
-            if topic_dup and action_dup:
-                reason = "same_topic_action"
-            elif claim_dup and action_dup and same_pattern:
-                reason = "same_claim_takeaway_pattern"
-            elif topic_close and claim_close and action_close:
-                reason = "same_topic_claim_takeaway"
+            reason = "hook_duplicate" if hook_dup or hook_close else "topic_duplicate"
+            if claim_dup or claim_close:
+                reason = "claim_duplicate"
+            elif topic_dup or topic_close:
+                reason = "topic_duplicate"
+            elif takeaway_dup or takeaway_close:
+                reason = "takeaway_duplicate"
             return SemanticCheckResult(
                 duplicate=True,
                 reason=reason,
@@ -410,13 +441,14 @@ def semantic_summaries(store: HistoryStore, slot: str | None = None, limit: int 
     relevant = [entry for entry in store.entries if not slot or str(entry.get("slot", "")).strip() == slot]
     summaries: list[str] = []
     for entry in reversed(relevant[-limit:]):
+        hook = str(entry.get("semantic_hook", "")).strip()
         topic = str(entry.get("semantic_topic", entry.get("topic", ""))).strip()
-        claim = str(entry.get("core_claim", "")).strip()
-        takeaway = str(entry.get("action_takeaway", "")).strip()
-        pattern = str(entry.get("semantic_pattern", entry.get("pattern_id", ""))).strip()
-        if topic or claim or takeaway:
+        claim = str(entry.get("semantic_claim", entry.get("core_claim", ""))).strip()
+        takeaway = str(entry.get("semantic_takeaway", entry.get("action_takeaway", ""))).strip()
+        pattern = str(entry.get("semantic_structure", entry.get("semantic_pattern", entry.get("pattern_id", "")))).strip()
+        if hook or topic or claim or takeaway:
             summaries.append(
-                " / ".join(part for part in [topic, claim, takeaway, pattern] if part)
+                " / ".join(part for part in [hook, topic, claim, takeaway, pattern] if part)
             )
     return summaries
 
@@ -454,14 +486,19 @@ def append_history(
             "posted_at": posted_at,
             "topic": topic or semantic.topic,
             "tags": extract_tags(raw),
-            "pattern_id": pattern_id or semantic.pattern,
+            "pattern_id": pattern_id or semantic.structure,
+            "semantic_hook": semantic.hook,
             "semantic_topic": semantic.topic,
-            "semantic_pattern": semantic.pattern,
-            "core_claim": semantic.core_claim,
-            "action_takeaway": semantic.action_takeaway,
+            "semantic_claim": semantic.claim,
+            "semantic_structure": semantic.structure,
+            "semantic_takeaway": semantic.takeaway,
+            "core_claim": semantic.claim,
+            "action_takeaway": semantic.takeaway,
+            "semantic_hook_key": semantic.hook_key,
             "semantic_topic_key": semantic.topic_key,
             "semantic_claim_key": semantic.claim_key,
-            "semantic_action_key": semantic.action_key,
+            "semantic_takeaway_key": semantic.takeaway_key,
+            "semantic_action_key": semantic.takeaway_key,
             "semantic_fingerprint": semantic.semantic_fingerprint,
         }
     )

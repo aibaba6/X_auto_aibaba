@@ -329,9 +329,9 @@ def _fallback_plan_text(slot: str, weekday_theme: str) -> str:
         return f"{weekday_theme}。朝枠は学び重視で、保存したくなる実務示唆を1本投稿。"
     if slot == "noon":
         return (
-            "今日のAIニュースは、機能数より運用に乗る速度が差になりやすい流れです。\n"
+            "AIニュースは、機能数より運用に乗る速度が差になりやすい流れです。\n"
             "次の3-6ヶ月は、要約精度より『どの判断を任せるか』の設計で差が開きそう。\n"
-            "今日は1工程だけ、AIに渡す入力と確認観点をセットで見直します。\n\n"
+            "1工程だけ、AIに渡す入力と確認観点をセットで見直します。\n\n"
             "#AIニュース #デザイン #業務改善"
         )
     return "夕方は共感ベースで1本。冷静に振り返れる短文で、明日に繋がる行動提案を入れる。"
@@ -472,14 +472,14 @@ def _morning_evergreen_post(index: int, variant: int = 0) -> str:
             f"{t['title']}\n\n"
             f"{t['insight']}\n"
             "派手な改善より、基礎を1つ整えた方が全体の印象は変わりやすいです。\n\n"
-            f"今日は {t['action']}\n\n"
+            f"{t['action']}\n\n"
             f"{t['tags']}"
         ),
         (
-            f"朝の見直しポイント: {t['title']}\n\n"
+            f"{t['title']}\n\n"
             f"{t['insight']}\n"
             "触る場所を増やす前に、土台を1つだけ整えるのが近道。\n\n"
-            f"今週は {t['action']}\n\n"
+            f"{t['action']}\n\n"
             f"{t['tags']}"
         ),
     ]
@@ -499,7 +499,7 @@ EVENING_ARUARU_TOPICS = [
     },
     {
         "title": "締切前ほど細部が気になる",
-        "body": "最後の30分で1pxを追い続ける現象、わりとみんな通る道。\n今日は“直す理由が言える1箇所だけ”に絞るのも手です。",
+        "body": "最後の30分で1pxを追い続ける現象、わりとみんな通る道。\n“直す理由が言える1箇所だけ”に絞ると戻りにくいです。",
         "tags": "#デザイナーあるある #UIデザイン #制作フロー",
     },
     {
@@ -519,14 +519,14 @@ def _evening_aruaru_post(index: int, variant: int = 0) -> str:
     t = EVENING_ARUARU_TOPICS[index % len(EVENING_ARUARU_TOPICS)]
     variants = [
         f"{t['title']}\n\n{t['body']}\n\n{t['tags']}",
-        f"{t['title']}\n\n{t['body']}\n今日は抱え込みすぎず、1つ決めたら十分です。\n\n{t['tags']}",
+        f"{t['title']}\n\n{t['body']}\n抱え込みすぎず、1つ決めたら十分です。\n\n{t['tags']}",
         f"{t['title']}\n\n{t['body']}\nそんな日ほど、次に迷わない一言だけ残して終えるのもありです。\n\n{t['tags']}",
     ]
     return variants[variant % len(variants)]
 
 
 EVENING_FALLBACK_OPENERS = [
-    "今日は小さな改善を1つ残せたら十分です。",
+    "小さな改善を1つ残せたら十分です。",
     "手が止まる日は、無理に進めないほうがうまくいくことがあります。",
     "夕方の修正は、勢いより優先順位が効きます。",
     "うまく進まない日は、設計が悪いのではなく疲れているだけのこともあります。",
@@ -536,9 +536,9 @@ EVENING_FALLBACK_OPENERS = [
 EVENING_FALLBACK_BODIES = [
     "明日に渡すメモを1行だけ書いて終わりにします。",
     "判断だけ先にメモして、作業は明日の自分に渡すのも手です。",
-    "今日は『直す理由が言える1箇所』だけ整えて締めます。",
+    "『直す理由が言える1箇所』だけ整えて締めます。",
     "まずは論点を2つに絞って、続きは明日に回す判断もありです。",
-    "今日は『次に迷わないメモ』を残せたら、それで十分。",
+    "『次に迷わないメモ』を残せたら、それで十分。",
 ]
 
 EVENING_FALLBACK_TAGS = [

@@ -20,8 +20,17 @@ LEADING_LABEL_RE = re.compile(
 )
 COPULA_DA_RE = re.compile(r"([^\n。！？]{1,40})だ。")
 LEADING_BANNED_PHRASE_RE = re.compile(
-    r"^\s*(今日は|今回は|ここで|まずは|〜してみましょう|してみましょう|していきます|見ていきます|考えていきます)\s*"
+    r"^\s*(今日は|今回は|ここで|まずは|朝の見直しポイント|今日の|今週は|〜してみましょう|してみましょう|していきます|見ていきます|考えていきます)\s*"
 )
+INLINE_NOISE_PATTERNS = [
+    (re.compile(r"朝の見直しポイント[:：]?\s*"), ""),
+    (re.compile(r"今週は\s*"), ""),
+    (re.compile(r"今日の"), ""),
+    (re.compile(r"([ぁ-んァ-ン一-龠A-Za-z0-9]+)してみる"), r"\1する"),
+    (re.compile(r"([ぁ-んァ-ン一-龠A-Za-z0-9]+)してみます"), r"\1します"),
+    (re.compile(r"([ぁ-んァ-ン一-龠A-Za-z0-9]+)してみてください"), r"\1してください"),
+]
+ABSTRACT_ENDING_RE = re.compile(r".*(が大事|が重要|が必要)です?。?$")
 LOW_DENSITY_PHRASES = [
     "今日は",
     "今回は",
@@ -29,6 +38,9 @@ LOW_DENSITY_PHRASES = [
     "まずは",
     "してみましょう",
     "していきます",
+    "今週は",
+    "今日の",
+    "朝の見直しポイント",
 ]
 CONCLUSION_HINTS = [
     "重要",
@@ -67,6 +79,22 @@ def _strip_banned_leading_phrases(text: str) -> str:
         prev = cleaned
         cleaned = LEADING_BANNED_PHRASE_RE.sub("", cleaned).lstrip("、。・:： ")
     return cleaned.strip()
+
+
+def _remove_inline_noise(text: str) -> str:
+    cleaned = text or ""
+    for pattern, repl in INLINE_NOISE_PATTERNS:
+        cleaned = pattern.sub(repl, cleaned)
+    return cleaned.strip()
+
+
+def _is_abstract_sentence(sentence: str) -> bool:
+    s = sentence.strip()
+    if not s:
+        return False
+    if ABSTRACT_ENDING_RE.match(s) and not re.search(r"(比較|確認|固定|絞|整え|見直|決め|減ら|増や|配置|再設計|メモ|試す)", s):
+        return True
+    return False
 
 
 def _sentences_from_body(text: str) -> list[str]:
@@ -168,9 +196,12 @@ def enforce_post_density_rules(text: str, slot_name: str = "morning") -> str:
     for ln in body.splitlines():
         cleaned = ln.strip()
         cleaned = _strip_banned_leading_phrases(cleaned)
+        cleaned = _remove_inline_noise(cleaned)
         for phrase in LOW_DENSITY_PHRASES:
             if cleaned.startswith(phrase):
                 cleaned = cleaned[len(phrase) :].lstrip("、。・:： ")
+        if _is_abstract_sentence(cleaned):
+            continue
         lines.append(cleaned)
     body = "\n".join([ln for ln in lines if ln]).strip()
     body = _reorder_to_conclusion_first(body)
@@ -198,6 +229,7 @@ def normalize_x_post_text(text: str, slot_name: str = "morning") -> str:
         cleaned = cleaned.replace("豆知識として、", "").replace("豆知識として", "")
         cleaned = cleaned.replace("デザイナーあるあるとして、", "").replace("デザイナーあるあるとして", "")
         cleaned = _strip_banned_leading_phrases(cleaned)
+        cleaned = _remove_inline_noise(cleaned)
         lines.append(cleaned)
     body = "\n".join(lines)
     body = enforce_post_density_rules(body, slot_name=slot_name)
@@ -235,6 +267,10 @@ def normalize_x_post_text(text: str, slot_name: str = "morning") -> str:
     if body:
         return f"{body}\n\n{tag_line}"
     return tag_line
+
+
+def post_text_normalize(text: str, slot_name: str = "morning") -> str:
+    return normalize_x_post_text(text, slot_name=slot_name)
 
 
 def build_post_drafts(
@@ -292,6 +328,8 @@ PDFストック知見（参考）: {json.dumps(ksn[:4], ensure_ascii=False)}
 禁止導入語: 「今日は」「今回は」「ここで」「まずは」「〜してみましょう」「〜していきます」。
 文章構造は必ず「結論 → 理由 → 具体的な設計・行動」。
 講義型ではなく洞察型にすること。1文目は説明の前置きではなく、最も言いたい結論を書くこと。
+前置きラベルや時間軸ワードで始めないこと。いきなり本題から入ること。
+「朝の見直しポイント」「今週は」「今日の〜」「〜してみる」「〜が大事」のような曖昧な言い回しは禁止。
 意味のない接続語や前置きを削り、SNS投稿として密度を高くすること。
 抽象語だけで逃げず、設計・判断・比較・行動のどれかが見える文にすること。
 最新性が必要な内容はニュース/X由来を優先し、PDFは基礎知識・背景の補強に使うこと。
@@ -303,6 +341,8 @@ PDFストック知見（参考）: {json.dumps(ksn[:4], ensure_ascii=False)}
 最近使った構成の言い換えだけで済ませないこと。同じ意味・同じ展開の再表現は禁止。
 直近の意味要約にあるテーマ、状況設定、結論、行動提案を繰り返さないこと。
 同じネタの文体違いは候補として数えないこと。
+各案で hook / claim / structure を必ず変えること。
+structure は最低でも「問題提起型 / 失敗型 / 気づき型 / 比較型 / 一言断言型」を使い分けること。
 改行で読みやすくすること（2-4段落、1段落1-2文）。
 必要に応じて箇条書きは1-3項目まで（長い箇条書きは禁止）。
 中黒（・）や短い記号で読みやすくしてよい。
@@ -407,6 +447,7 @@ def build_noon_news_candidates(
 - その後に「これからどう効いてくるか」の予測を1文入れる
 - 最後に、実務者が今日試せる小さな行動を1文入れる
 - 「今日は」「今回は」「ここで」「まずは」「〜してみましょう」「〜していきます」は使わない
+- 「朝の見直しポイント」「今週は」「今日の〜」「〜してみる」「〜が大事」も使わない
 - 1文目は必ず結論
 - URLは本文に含めない
 - 引用投稿前提ではなく、通常投稿として成立させる
@@ -415,6 +456,8 @@ def build_noon_news_candidates(
 - 各案で書き出し、論点順、予測の切り口、行動提案を明確に変えること
 - 似た文面の言い換えを複数返さないこと
 - 直近の昼投稿と同じニュース論点、同じ結論、同じ行動提案を繰り返さないこと
+- 時間軸ワードや前置きラベルで始めないこと。いきなり本題に入ること
+- hook / claim / structure を案ごとに変えること
 - 2-4段落、必要なら短い箇条書き1-2項目
 - ハッシュタグは文末に2-3個
 - JSONのみで返す: {{"posts":[{{"text":"...","reason":"..."}}]}}

@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from .collectors import fetch_rss_items, filter_blocked, rank_quote_candidates
-from .llm import build_noon_news_candidates, build_post_drafts, build_quote_post
+from .llm import build_noon_news_candidates, build_post_drafts, build_quote_post, normalize_x_post_text
 from .media_tools import generate_image_with_freepik_mystic, generate_image_with_nanobanana, generate_image_with_nanobanana_pro_api
 from .models import ContentItem, DraftPost
 from .pdf_knowledge import get_pdf_knowledge_snippets
@@ -109,21 +109,21 @@ def _fallback_draft(item: ContentItem, slot: str, horizon: str) -> DraftPost:
 
     if slot == "morning":
         text = (
-            f"最新: {title}。示唆: 今日の制作では『要素を増やす前に構造を減らす』視点が効きます。"
-            f"予測: {horizon}で、見た目より意図説明ができるデザインの評価が上がる。"
-            "行動: 今週は1画面だけ再設計して差分を検証。"
+            f"{title}は、要素を足す前に構造を減らす視点で見直すと整理しやすい。"
+            f"{horizon}では、見た目の派手さより意図を説明できる設計が評価されやすい。"
+            "1画面だけ再設計して差分を比べる。"
         )
     elif slot == "noon":
         text = (
-            f"今日の要点: {title}。示唆: まず1機能だけAI化。"
-            f"予測: {horizon}で試作速度が標準化。行動: 今週1つだけ小さく実験。"
+            f"{title}は、機能数より運用設計の差が出やすい流れ。"
+            f"{horizon}では試作速度より判断の任せ方が差になりやすい。1工程だけAI化して検証する。"
         )
     else:
         text = (
-            f"今日は {title} を見て、焦らなくていいと感じました。示唆: 完璧な正解より、続けられる改善が強い。"
-            f"予測: {horizon}で差がつくのは習慣化。行動: 今週は1つだけ振り返りを言語化。"
+            f"{title}の場面ほど、完璧な正解より続けられる改善を先に決めたほうが崩れにくい。"
+            f"{horizon}で差になりやすいのは一度に抱え込まない設計。次に迷わない一言だけ残す。"
         )
-    return DraftPost(text=text, reason="fallback")
+    return DraftPost(text=normalize_x_post_text(text, slot_name=slot), reason="fallback")
 
 
 def _engagement_score(c) -> int:
