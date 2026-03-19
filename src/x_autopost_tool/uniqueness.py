@@ -75,6 +75,15 @@ class SemanticCheckResult:
 
 
 @dataclass
+class SemanticStageCheckResult:
+    duplicate: bool
+    warning: bool
+    reason: str
+    candidate: SemanticSignature
+    matched_entry: dict[str, Any] | None
+
+
+@dataclass
 class EveningDuplicateCheckResult:
     duplicate: bool
     reason: str
@@ -347,6 +356,67 @@ def semantic_duplicate_check(
         candidate=candidate,
         matched_entry=None,
     )
+
+
+def semantic_stage_check(
+    text: str,
+    store: HistoryStore,
+    *,
+    slot: str | None = None,
+    recent_limit: int = 24,
+) -> SemanticStageCheckResult:
+    candidate = semantic_signature(text)
+    relevant_entries = [entry for entry in store.entries if not slot or str(entry.get("slot", "")).strip() == slot]
+    relevant_entries = relevant_entries[-recent_limit:]
+    warning_match: dict[str, Any] | None = None
+    warning_reason = ""
+    for entry in reversed(relevant_entries):
+        hook_key = str(entry.get("semantic_hook_key", "")).strip()
+        topic_key = str(entry.get("semantic_topic_key", "")).strip()
+        claim_key = str(entry.get("semantic_claim_key", "")).strip()
+        takeaway_key = str(entry.get("semantic_takeaway_key", entry.get("semantic_action_key", ""))).strip()
+        structure = str(entry.get("semantic_structure", entry.get("semantic_pattern", ""))).strip()
+        entry_hook = str(entry.get("semantic_hook", "")).strip()
+        entry_topic = str(entry.get("semantic_topic", entry.get("topic", ""))).strip()
+        entry_claim = str(entry.get("semantic_claim", entry.get("core_claim", ""))).strip()
+        entry_takeaway = str(entry.get("semantic_takeaway", entry.get("action_takeaway", ""))).strip()
+        same_structure = bool(structure and structure == candidate.structure)
+        hook_exact = bool(hook_key and hook_key == candidate.hook_key)
+        topic_exact = bool(topic_key and topic_key == candidate.topic_key)
+        claim_exact = bool(claim_key and claim_key == candidate.claim_key)
+        takeaway_exact = bool(takeaway_key and takeaway_key == candidate.takeaway_key)
+        hook_close = _token_overlap_score(candidate.hook, entry_hook) >= 0.82
+        topic_close = _token_overlap_score(candidate.topic, entry_topic) >= 0.72
+        claim_close = _token_overlap_score(candidate.claim, entry_claim) >= 0.72
+        takeaway_close = _token_overlap_score(candidate.takeaway, entry_takeaway) >= 0.72
+        hard_duplicate = (
+            hook_exact
+            or (topic_exact and claim_exact)
+            or (claim_exact and same_structure)
+            or (hook_close and claim_close and same_structure)
+            or (
+                bool(str(entry.get("semantic_fingerprint", "")).strip())
+                and str(entry.get("semantic_fingerprint", "")).strip() == candidate.semantic_fingerprint
+            )
+        )
+        if hard_duplicate:
+            reason = "hook_duplicate" if hook_exact or hook_close else "semantic_duplicate"
+            if claim_exact:
+                reason = "claim_duplicate"
+            elif topic_exact:
+                reason = "topic_duplicate"
+            return SemanticStageCheckResult(True, True, reason, candidate, entry)
+        if not warning_match and (topic_exact or claim_exact or topic_close or claim_close or takeaway_exact or takeaway_close or same_structure):
+            warning_match = entry
+            if claim_exact or claim_close:
+                warning_reason = "claim_near_duplicate"
+            elif topic_exact or topic_close:
+                warning_reason = "topic_near_duplicate"
+            elif same_structure:
+                warning_reason = "structure_near_duplicate"
+            else:
+                warning_reason = "takeaway_near_duplicate"
+    return SemanticStageCheckResult(False, bool(warning_match), warning_reason, candidate, warning_match)
 
 
 def recent_evening_signatures(store: HistoryStore, limit: int = 10) -> list[dict[str, str]]:

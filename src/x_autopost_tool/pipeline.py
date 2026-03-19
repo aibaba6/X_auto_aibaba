@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from .collectors import fetch_rss_items, filter_blocked, rank_quote_candidates
-from .content_types import build_evening_type_drafts, build_morning_type_drafts
+from .content_types import build_evening_type_drafts, build_morning_type_drafts, build_quote_fallback_drafts
 from .llm import build_noon_news_candidates, build_post_drafts, build_quote_post, normalize_x_post_text
 from .media_tools import generate_image_with_freepik_mystic, generate_image_with_nanobanana, generate_image_with_nanobanana_pro_api
 from .models import ContentItem, DraftPost
@@ -25,6 +25,7 @@ from .uniqueness import (
     loose_fingerprint,
     register_text,
     semantic_duplicate_check,
+    semantic_stage_check,
     semantic_summaries,
     save_history,
     save_memory,
@@ -72,6 +73,8 @@ def _is_duplicate_candidate(
     *,
     history=None,
     slot: str = "",
+    generation_level: str = "strict",
+    candidate_count: int = 0,
     recent_strict: set[str],
     recent_loose: set[str],
     posted_strict: set[str] | None = None,
@@ -98,15 +101,21 @@ def _is_duplicate_candidate(
         print("[UNIQUE REJECT] reason=posted_loose_duplicate")
         return True
     if history is not None:
-        if slot == "evening":
+        effective_level = _candidate_gen_level(generation_level, candidate_count)
+        print(f"[GEN LEVEL] {effective_level}")
+        if slot == "evening" and effective_level == "strict":
             evening = evening_duplicate_check(value, history)
             if evening.duplicate:
                 print(f"[EVENING REJECT] reason={evening.reason}")
                 return True
-        semantic = semantic_duplicate_check(value, history, slot=slot or None)
-        if semantic.duplicate:
-            print(f"[SEMANTIC REJECT] reason={semantic.reason}")
+        stage = semantic_stage_check(value, history, slot=slot or None)
+        if stage.duplicate:
+            print(f"[SEMANTIC REJECT] reason={stage.reason}")
             return True
+        if stage.warning:
+            print(f"[SEMANTIC CHECK] warning=yes reason={stage.reason}")
+            if effective_level == "strict":
+                return True
     return False
 
 
@@ -122,6 +131,14 @@ def _content_type_allowed(content_type: str, recent_types: list[str], *, slot: s
     allowed = normalized not in blocked
     print(f"[CONTENT TYPE] type={normalized} recent={','.join(blocked) or '-'} allowed={'yes' if allowed else 'no'}")
     return allowed
+
+
+def _candidate_gen_level(level: str, candidate_count: int) -> str:
+    if level == "strict" and candidate_count >= 3:
+        return "strict"
+    if candidate_count < 3:
+        return "relaxed"
+    return level
 
 
 def _fallback_draft(item: ContentItem, slot: str, horizon: str) -> DraftPost:
@@ -153,6 +170,42 @@ def _fallback_draft(item: ContentItem, slot: str, horizon: str) -> DraftPost:
         topic=title,
         structure="一言断言型",
     )
+
+
+def _short_fallback_draft(slot: str) -> DraftPost:
+    if slot == "morning":
+        text = "迷いを減らす設計ほど、見た目より先に効きます。\n役割が重なる要素を1つ外して比較する。\n\n#デザイン基礎 #UIデザイン #実務"
+        return DraftPost(text=normalize_x_post_text(text, slot_name=slot), reason="short-fallback", content_type="basic", topic="判断を減らす設計", structure="一言断言型")
+    if slot == "evening":
+        text = "進める量より、迷いを減らせた日のほうが次につながります。\n明日の自分が迷わない一言だけ残す。\n\n#デザイン実務 #制作フロー #継続改善"
+        return DraftPost(text=normalize_x_post_text(text, slot_name=slot), reason="short-fallback", content_type="daily", topic="迷いを減らす終わり方", structure="一言断言型")
+    text = "機能を増やす前に、どの判断を軽くするかを見る。\n小さく試して差分を確認する。\n\n#AI #AIニュース #デザイン"
+    return DraftPost(text=normalize_x_post_text(text, slot_name=slot), reason="short-fallback", content_type="news", topic="判断を軽くするAI活用", structure="一言断言型")
+
+
+def _build_retry_batches(
+    *,
+    slot: str,
+    items: list[ContentItem],
+    seed: int,
+    history_count: int,
+    horizon: str,
+) -> list[tuple[str, list[DraftPost]]]:
+    if slot == "morning":
+        return [
+            ("strict", build_morning_type_drafts(seed=seed + history_count, max_candidates=8)),
+            ("relaxed", build_morning_type_drafts(seed=seed + history_count + 19, max_candidates=8, preferred_types=["basic", "quote"])),
+            ("forced", build_quote_fallback_drafts(seed=seed + history_count + 37, max_candidates=4) + [_short_fallback_draft("morning")]),
+        ]
+    if slot == "evening":
+        base_item = items[0] if items else ContentItem(source="", title="制作の終わり方", summary="", url="")
+        return [
+            ("strict", build_evening_type_drafts(items, seed=seed + history_count, max_candidates=10, preferred_types=["daily", "trend", "aruaru"])),
+            ("relaxed", build_evening_type_drafts(items, seed=seed + history_count + 17, max_candidates=10, preferred_types=["daily", "trend"])),
+            ("forced", build_evening_type_drafts(items, seed=seed + history_count + 31, max_candidates=8, preferred_types=["trend", "daily"]) + build_quote_fallback_drafts(seed=seed + history_count + 43, max_candidates=2) + [_fallback_draft(base_item, "evening", horizon), _short_fallback_draft("evening")]),
+        ]
+    base_item = items[0] if items else ContentItem(source="", title="AI運用の設計", summary="", url="")
+    return [("forced", [_fallback_draft(base_item, slot, horizon), _short_fallback_draft(slot)])]
 
 
 def _engagement_score(c) -> int:
@@ -583,60 +636,91 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                     save_history(history)
                     print(f"noon news posted: {tweet_id}")
                     return
+        fallback_noon = _short_fallback_draft("noon")
+        print("[FALLBACK USED] type=news-short")
+        if config.dry_run:
+            print(f"[DRY-RUN NOON FALLBACK] {fallback_noon.text}")
+            return
+        tweet_id = _safe_create_post(x, fallback_noon.text, label="main-post-noon-fallback")
+        if tweet_id:
+            register_text(fallback_noon.text, memory)
+            save_memory(memory)
+            append_history(
+                fallback_noon.text,
+                history,
+                slot="noon",
+                source="noon-fallback",
+                tweet_id=tweet_id,
+                posted_at=now.isoformat(),
+                content_type=fallback_noon.content_type,
+                topic=fallback_noon.topic,
+                pattern_id=fallback_noon.structure,
+            )
+            save_history(history)
+            print(f"noon fallback posted: {tweet_id}")
+            return
         print("[UNIQUE HOLD] reason=no_unique_candidate slot=noon")
         print("[SEMANTIC HOLD] reason=no_semantically_unique_candidate slot=noon")
         return
 
     print("[2/5] 投稿案生成")
-    if resolved_slot == "morning":
-        drafts = build_morning_type_drafts(
-            seed=now.toordinal() * 7 + len(history.entries),
-            max_candidates=max(6, slot_posts_per_run * 4),
-        )
-    elif resolved_slot == "evening":
-        drafts = build_evening_type_drafts(
-            items,
-            seed=now.toordinal() * 13 + len(history.entries),
-            max_candidates=max(9, slot_posts_per_run * 5),
+    passed_drafts = []
+    if resolved_slot in {"morning", "evening"}:
+        retry_batches = _build_retry_batches(
+            slot=resolved_slot,
+            items=items,
+            seed=now.toordinal() * (13 if resolved_slot == "evening" else 7),
+            history_count=len(history.entries),
+            horizon=config.prediction_horizon,
         )
     else:
-        drafts = build_post_drafts(
-            model=config.model,
-            items=items,
-            tone=config.tone,
-            audience=config.audience,
-            prediction_horizon=config.prediction_horizon,
-            post_style_template=config.post_style_template,
-            voice_guide=config.voice_guide,
-            style_reference_posts=config.style_reference_posts,
-            weekday_theme=weekday_theme,
-            slot_name=resolved_slot,
-            slot_style=slot_style,
-            slot_min_chars=slot_min_chars,
-            slot_max_chars=slot_max_chars,
-            max_posts=slot_posts_per_run,
-            knowledge_snippets=pdf_knowledge,
-            recent_self_posts=recent_self_posts,
-            recent_semantic_summaries=recent_semantic,
-        )
-    if not drafts and items:
-        print("[FALLBACK] 生成失敗のためテンプレ投稿を作成")
-        drafts = [_fallback_draft(items[0], resolved_slot, config.prediction_horizon)]
+        retry_batches = [
+            (
+                "strict",
+                build_post_drafts(
+                    model=config.model,
+                    items=items,
+                    tone=config.tone,
+                    audience=config.audience,
+                    prediction_horizon=config.prediction_horizon,
+                    post_style_template=config.post_style_template,
+                    voice_guide=config.voice_guide,
+                    style_reference_posts=config.style_reference_posts,
+                    weekday_theme=weekday_theme,
+                    slot_name=resolved_slot,
+                    slot_style=slot_style,
+                    slot_min_chars=slot_min_chars,
+                    slot_max_chars=slot_max_chars,
+                    max_posts=slot_posts_per_run,
+                    knowledge_snippets=pdf_knowledge,
+                    recent_self_posts=recent_self_posts,
+                    recent_semantic_summaries=recent_semantic,
+                ),
+            ),
+            ("forced", [_fallback_draft(items[0], resolved_slot, config.prediction_horizon), _short_fallback_draft(resolved_slot)]),
+        ]
 
-    passed_drafts = []
-    for attempt, d in enumerate(drafts, start=1):
-        print(f"[UNIQUE RETRY] attempt={attempt}")
-        print(f"[SEMANTIC RETRY] attempt={attempt}")
-        if d.content_type and not _content_type_allowed(d.content_type, recent_content_types, slot=resolved_slot):
-            print(f"[UNIQUE REJECT] reason=content_type_repeat type={d.content_type}")
-            continue
-        ok, reasons = validate_post_draft(d, config, min_chars=slot_min_chars, max_chars=slot_max_chars)
-        if ok:
+    for step, (level, drafts) in enumerate(retry_batches, start=1):
+        print(f"[RETRY LEVEL] step={step}")
+        if not drafts and items:
+            drafts = [_fallback_draft(items[0], resolved_slot, config.prediction_horizon)]
+        for attempt, d in enumerate(drafts, start=1):
+            print(f"[UNIQUE RETRY] attempt={attempt}")
+            print(f"[SEMANTIC RETRY] attempt={attempt}")
+            if level != "forced" and d.content_type and not _content_type_allowed(d.content_type, recent_content_types, slot=resolved_slot):
+                print(f"[UNIQUE REJECT] reason=content_type_repeat type={d.content_type}")
+                continue
+            ok, reasons = validate_post_draft(d, config, min_chars=slot_min_chars, max_chars=slot_max_chars)
+            if not ok:
+                print(f"[DROP DRAFT] {','.join(reasons)}")
+                continue
             if _is_duplicate_candidate(
                 d.text,
                 memory,
                 history=history,
                 slot=resolved_slot,
+                generation_level=level,
+                candidate_count=len(drafts),
                 recent_strict=recent_post_fingerprints,
                 recent_loose=recent_post_loose_fingerprints,
                 posted_strict=posted_slot_fingerprints,
@@ -654,6 +738,9 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                 print(f"[STRUCTURE] {d.structure}")
             if d.content_type == "trend" and d.topic:
                 print(f"[TREND SOURCE] {d.topic[:120]}")
+            if level == "forced" and d.content_type == "quote":
+                print("[FALLBACK USED] type=quote")
+            print(f"[FINAL PICK] type={d.content_type or resolved_slot}")
             print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(d.text)}")
             semantic = semantic_duplicate_check(d.text, history, slot=resolved_slot)
             print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
@@ -666,8 +753,9 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             passed_drafts.append(d)
             if d.content_type:
                 recent_content_types.append(d.content_type)
-        else:
-            print(f"[DROP DRAFT] {','.join(reasons)}")
+            break
+        if passed_drafts:
+            break
     if not passed_drafts:
         print(f"[UNIQUE HOLD] reason=no_unique_candidate slot={resolved_slot}")
         print(f"[SEMANTIC HOLD] reason=no_semantically_unique_candidate slot={resolved_slot}")

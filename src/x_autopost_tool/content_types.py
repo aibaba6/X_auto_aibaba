@@ -30,24 +30,43 @@ MORNING_BASIC_TOPICS = [
 MORNING_QUOTES = [
     {
         "quote": "Good design is as little design as possible.",
+        "translation": "良いデザインは、必要以上に足さない状態に近い。",
         "author": "Dieter Rams",
         "interpretation": "足し算より、何を残すかの判断に設計力が出ます。",
         "action": "画面の要素を削る前に、役割が重複している場所を見つける。",
         "tags": "#デザイン思考 #UIデザイン #実務",
     },
     {
-        "quote": "Design is intelligence made visible.",
-        "author": "Alina Wheeler",
-        "interpretation": "見た目の整いは、判断の整理が見えている状態です。",
-        "action": "説明しづらい画面ほど、構造図を1枚にしてから直す。",
-        "tags": "#情報設計 #デザイン基礎 #制作フロー",
+        "quote": "Design is not just what it looks like and feels like. Design is how it works.",
+        "translation": "デザインは見た目や感触だけではない。どう機能するかだ。",
+        "author": "Steve Jobs",
+        "interpretation": "見た目を整える前に、使い方の筋が通っているかを確認する必要があります。",
+        "action": "画面を磨く前に、1操作ごとの迷いがないかを先に見る。",
+        "tags": "#UX設計 #プロダクトデザイン #実務",
     },
     {
         "quote": "Simplicity is about subtracting the obvious and adding the meaningful.",
+        "translation": "シンプルさは、当たり前を削り、本当に意味のある差を残すこと。",
         "author": "John Maeda",
         "interpretation": "削るだけでは足りず、意味が伝わる差を残す必要があります。",
         "action": "消す要素と強める要素を1つずつ決めて比較する。",
         "tags": "#デザイン応用 #ミニマル #UI設計",
+    },
+    {
+        "quote": "Complicating is easy, simplifying is difficult.",
+        "translation": "複雑にするのは簡単だが、単純にするのは難しい。",
+        "author": "Bruno Munari",
+        "interpretation": "要素を増やすより、判断を減らす設計のほうが難しく、価値も出やすいです。",
+        "action": "説明が長い画面ほど、減らせる選択肢を先に探す。",
+        "tags": "#情報設計 #デザイン思考 #制作フロー",
+    },
+    {
+        "quote": "Design is a way of life, a point of view.",
+        "translation": "デザインは生き方であり、ものの見方そのものだ。",
+        "author": "Paul Rand",
+        "interpretation": "表層の装飾ではなく、どこに視点を置くかが設計に出ます。",
+        "action": "画面を直す前に、誰の判断を助けたいのかを言葉にする。",
+        "tags": "#デザイン思考 #ブランド設計 #実務",
     },
 ]
 
@@ -113,10 +132,14 @@ def _draft(text: str, reason: str, content_type: str, topic: str, claim: str, st
     )
 
 
-def build_morning_type_drafts(seed: int, max_candidates: int = 6) -> list[DraftPost]:
+def build_morning_type_drafts(
+    seed: int,
+    max_candidates: int = 6,
+    preferred_types: list[str] | None = None,
+) -> list[DraftPost]:
     rng = random.Random(seed)
     drafts: list[DraftPost] = []
-    order = ["basic", "quote"]
+    order = preferred_types[:] if preferred_types else ["basic", "quote"]
     rng.shuffle(order)
     for content_type in order:
         pool = MORNING_BASIC_TOPICS if content_type == "basic" else MORNING_QUOTES
@@ -132,18 +155,31 @@ def build_morning_type_drafts(seed: int, max_candidates: int = 6) -> list[DraftP
                 drafts.append(_draft(text, "morning-basic", "basic", item["title"], item["action"], "一言断言型"))
             else:
                 text = _normalize(
-                    f"「{item['quote']}」\n{item['author']}\n\n{item['interpretation']}\n{item['action']}\n\n{item['tags']}",
+                    (
+                        f"\"{item['quote']}\"\n"
+                        f"（{item['translation']}）\n"
+                        f"{item['author']}\n\n"
+                        f"{item['interpretation']}\n"
+                        f"{item['action']}\n\n"
+                        f"{item['tags']}"
+                    ),
                     slot_name="morning",
                 )
                 drafts.append(_draft(text, "morning-quote", "quote", item["author"], item["interpretation"], "引用解釈型"))
     return drafts[:max_candidates]
 
 
-def build_evening_type_drafts(items: list[ContentItem], seed: int, max_candidates: int = 9) -> list[DraftPost]:
+def build_evening_type_drafts(
+    items: list[ContentItem],
+    seed: int,
+    max_candidates: int = 9,
+    preferred_types: list[str] | None = None,
+) -> list[DraftPost]:
     rng = random.Random(seed)
     drafts: list[DraftPost] = []
-    type_order = ["daily", "trend", "aruaru"]
-    rng.shuffle(type_order)
+    type_order = preferred_types[:] if preferred_types else ["daily", "trend", "aruaru"]
+    if not preferred_types:
+        rng.shuffle(type_order)
     for content_type in type_order:
         if content_type == "aruaru":
             pool = EVENING_ARUARU[:]
@@ -163,3 +199,7 @@ def build_evening_type_drafts(items: list[ContentItem], seed: int, max_candidate
                 text = _normalize(f"{_trend_body(item)}\n\n#デザイントレンド #UX #プロダクト", slot_name="evening")
                 drafts.append(_draft(text, f"evening-trend:{item.title}", "trend", item.title, item.summary[:80], "比較型"))
     return drafts[:max_candidates]
+
+
+def build_quote_fallback_drafts(seed: int, max_candidates: int = 4) -> list[DraftPost]:
+    return build_morning_type_drafts(seed=seed, max_candidates=max_candidates, preferred_types=["quote"])

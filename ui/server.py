@@ -47,7 +47,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.x_autopost_tool.collectors import fetch_rss_items, filter_blocked
-from src.x_autopost_tool.content_types import build_evening_type_drafts, build_morning_type_drafts
+from src.x_autopost_tool.content_types import build_evening_type_drafts, build_morning_type_drafts, build_quote_fallback_drafts
 from src.x_autopost_tool.llm import build_post_drafts, normalize_x_post_text
 from src.x_autopost_tool.media_tools import (
     build_nano_banana_prompt_payload,
@@ -79,6 +79,7 @@ from src.x_autopost_tool.uniqueness import (
     register_text,
     semantic_duplicate_check,
     semantic_signature,
+    semantic_stage_check,
     semantic_summaries,
     save_history,
     save_memory,
@@ -391,6 +392,7 @@ def _is_used_before(
     seen_fingerprints: set[str],
     history=None,
     slot: str = "",
+    generation_level: str = "strict",
 ) -> bool:
     value = (text or "").strip()
     if not value:
@@ -409,15 +411,19 @@ def _is_used_before(
         print("[UNIQUE REJECT] reason=history_loose_duplicate")
         return True
     if history is not None:
-        if slot == "evening":
+        if slot == "evening" and generation_level == "strict":
             evening = evening_duplicate_check(value, history)
             if evening.duplicate:
                 print(f"[EVENING REJECT] reason={evening.reason}")
                 return True
-        semantic = semantic_duplicate_check(value, history, slot=slot or None)
-        if semantic.duplicate:
-            print(f"[SEMANTIC REJECT] reason={semantic.reason}")
+        stage = semantic_stage_check(value, history, slot=slot or None)
+        if stage.duplicate:
+            print(f"[SEMANTIC REJECT] reason={stage.reason}")
             return True
+        if stage.warning:
+            print(f"[SEMANTIC CHECK] warning=yes reason={stage.reason}")
+            if generation_level == "strict":
+                return True
     return False
 
 
@@ -1138,27 +1144,35 @@ def api_plan_preview():
                 picked = None
                 picked_draft = None
                 morning_seed = d.toordinal() * 11 + i + generation_seed
-                morning_drafts = build_morning_type_drafts(morning_seed, max_candidates=8)
-                for attempt, draft in enumerate(morning_drafts, start=1):
-                    print(f"[UNIQUE RETRY] attempt={attempt}")
-                    candidate = draft.text
-                    print(f"[SEMANTIC RETRY] attempt={attempt}")
-                    recent_types = recent_content_types_by_slot["morning"][-1:]
-                    if draft.content_type and draft.content_type in recent_types:
-                        print(f"[UNIQUE REJECT] reason=content_type_repeat type={draft.content_type}")
-                        continue
-                    if not _is_used_before(candidate, memory, posted_morning_fp, history=history, slot="morning"):
-                        if not (_seen_keys(candidate) & local_fp):
-                            _remember_seen(candidate, local_fp)
-                            print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
-                            semantic = semantic_duplicate_check(candidate, history, slot="morning")
-                            print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
-                            if draft.content_type:
-                                print(f"[PICKED TYPE] type={draft.content_type}")
-                                recent_content_types_by_slot["morning"].append(draft.content_type)
-                            picked = candidate
-                            picked_draft = draft
-                            break
+                morning_batches = [
+                    ("strict", build_morning_type_drafts(morning_seed, max_candidates=8)),
+                    ("relaxed", build_morning_type_drafts(morning_seed + 17, max_candidates=8, preferred_types=["basic", "quote"])),
+                    ("forced", build_quote_fallback_drafts(morning_seed + 29, max_candidates=4)),
+                ]
+                for level, drafts in morning_batches:
+                    print(f"[GEN LEVEL] {level}")
+                    for attempt, draft in enumerate(drafts, start=1):
+                        print(f"[UNIQUE RETRY] attempt={attempt}")
+                        candidate = draft.text
+                        print(f"[SEMANTIC RETRY] attempt={attempt}")
+                        recent_types = recent_content_types_by_slot["morning"][-1:]
+                        if level != "forced" and draft.content_type and draft.content_type in recent_types:
+                            print(f"[UNIQUE REJECT] reason=content_type_repeat type={draft.content_type}")
+                            continue
+                        if not _is_used_before(candidate, memory, posted_morning_fp, history=history, slot="morning", generation_level=level):
+                            if not (_seen_keys(candidate) & local_fp):
+                                _remember_seen(candidate, local_fp)
+                                print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
+                                semantic = semantic_duplicate_check(candidate, history, slot="morning")
+                                print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
+                                if draft.content_type:
+                                    print(f"[PICKED TYPE] type={draft.content_type}")
+                                    recent_content_types_by_slot["morning"].append(draft.content_type)
+                                picked = candidate
+                                picked_draft = draft
+                                break
+                    if picked:
+                        break
                 if not picked:
                     picked = _unique_or_fallback(
                         "",
@@ -1191,37 +1205,45 @@ def api_plan_preview():
                 picked = None
                 picked_draft = None
                 evening_seed = d.toordinal() * 17 + i + generation_seed
-                evening_drafts = build_evening_type_drafts(items, evening_seed, max_candidates=10)
-                for attempt, draft in enumerate(evening_drafts, start=1):
-                    print(f"[UNIQUE RETRY] attempt={attempt}")
-                    candidate = draft.text
-                    print(f"[SEMANTIC RETRY] attempt={attempt}")
-                    recent_types = recent_content_types_by_slot["evening"][-2:]
-                    if draft.content_type and draft.content_type in recent_types:
-                        print(f"[UNIQUE REJECT] reason=content_type_repeat type={draft.content_type}")
-                        continue
-                    if not _is_used_before(candidate, memory, posted_evening_fp, history=history, slot="evening"):
-                        if not (_seen_keys(candidate) & local_fp):
-                            _remember_seen(candidate, local_fp)
-                            print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
-                            semantic = semantic_duplicate_check(candidate, history, slot="evening")
-                            print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
-                            if draft.content_type:
-                                print(f"[PICKED TYPE] type={draft.content_type}")
-                                recent_content_types_by_slot["evening"].append(draft.content_type)
-                            if draft.topic:
-                                print(f"[TOPIC] {draft.topic[:120]}")
-                            if draft.structure:
-                                print(f"[STRUCTURE] {draft.structure}")
-                            if draft.content_type == "trend" and draft.topic:
-                                print(f"[TREND SOURCE] {draft.topic[:120]}")
-                            print(
-                                f"[EVENING PICKED] hook={semantic.candidate.hook[:60]} "
-                                f"structure={semantic.candidate.structure}"
-                            )
-                            picked = candidate
-                            picked_draft = draft
-                            break
+                evening_batches = [
+                    ("strict", build_evening_type_drafts(items, evening_seed, max_candidates=10, preferred_types=["daily", "trend", "aruaru"])),
+                    ("relaxed", build_evening_type_drafts(items, evening_seed + 19, max_candidates=10, preferred_types=["daily", "trend"])),
+                    ("forced", build_evening_type_drafts(items, evening_seed + 31, max_candidates=8, preferred_types=["trend", "daily"]) + build_quote_fallback_drafts(evening_seed + 43, max_candidates=2)),
+                ]
+                for level, drafts in evening_batches:
+                    print(f"[GEN LEVEL] {level}")
+                    for attempt, draft in enumerate(drafts, start=1):
+                        print(f"[UNIQUE RETRY] attempt={attempt}")
+                        candidate = draft.text
+                        print(f"[SEMANTIC RETRY] attempt={attempt}")
+                        recent_types = recent_content_types_by_slot["evening"][-2:]
+                        if level != "forced" and draft.content_type and draft.content_type in recent_types:
+                            print(f"[UNIQUE REJECT] reason=content_type_repeat type={draft.content_type}")
+                            continue
+                        if not _is_used_before(candidate, memory, posted_evening_fp, history=history, slot="evening", generation_level=level):
+                            if not (_seen_keys(candidate) & local_fp):
+                                _remember_seen(candidate, local_fp)
+                                print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
+                                semantic = semantic_duplicate_check(candidate, history, slot="evening")
+                                print(f"[SEMANTIC PICKED] topic={semantic.candidate.topic[:80]}")
+                                if draft.content_type:
+                                    print(f"[PICKED TYPE] type={draft.content_type}")
+                                    recent_content_types_by_slot["evening"].append(draft.content_type)
+                                if draft.topic:
+                                    print(f"[TOPIC] {draft.topic[:120]}")
+                                if draft.structure:
+                                    print(f"[STRUCTURE] {draft.structure}")
+                                if draft.content_type == "trend" and draft.topic:
+                                    print(f"[TREND SOURCE] {draft.topic[:120]}")
+                                print(
+                                    f"[EVENING PICKED] hook={semantic.candidate.hook[:60]} "
+                                    f"structure={semantic.candidate.structure}"
+                                )
+                                picked = candidate
+                                picked_draft = draft
+                                break
+                    if picked:
+                        break
                 if not picked:
                     picked = _unique_or_fallback(
                         "",
