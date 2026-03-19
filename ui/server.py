@@ -1215,8 +1215,8 @@ def api_plan_preview():
                 picked_draft = None
                 morning_seed = d.toordinal() * 11 + i + generation_seed
                 morning_batches = [
-                    ("strict", build_morning_type_drafts(morning_seed, max_candidates=10, items=items)),
-                    ("relaxed", build_morning_type_drafts(morning_seed + 17, max_candidates=10, preferred_types=["timeless", "practical", "insight", "quote", "latest", "trend"], items=items)),
+                    ("strict", build_morning_type_drafts(morning_seed, max_candidates=12, preferred_types=["latest", "trend", "practical", "insight", "timeless", "quote"], items=items)),
+                    ("relaxed", build_morning_type_drafts(morning_seed + 17, max_candidates=12, preferred_types=["trend", "latest", "practical", "insight", "timeless", "quote"], items=items)),
                     ("forced", build_quote_fallback_drafts(morning_seed + 29, max_candidates=4)),
                 ]
                 for level, drafts in morning_batches:
@@ -1303,9 +1303,9 @@ def api_plan_preview():
                 picked_draft = None
                 evening_seed = d.toordinal() * 17 + i + generation_seed
                 evening_batches = [
-                    ("strict", build_evening_type_drafts(items, evening_seed, max_candidates=12, preferred_types=["practical", "insight", "latest", "trend", "timeless", "quote"])),
-                    ("relaxed", build_evening_type_drafts(items, evening_seed + 19, max_candidates=12, preferred_types=["practical", "insight", "trend", "timeless", "latest", "quote"])),
-                    ("forced", build_evening_type_drafts(items, evening_seed + 31, max_candidates=8, preferred_types=["trend", "practical", "insight", "quote"]) + build_quote_fallback_drafts(evening_seed + 43, max_candidates=2)),
+                    ("strict", build_evening_type_drafts(items, evening_seed, max_candidates=14, preferred_types=["latest", "trend", "practical", "insight", "timeless", "quote"])),
+                    ("relaxed", build_evening_type_drafts(items, evening_seed + 19, max_candidates=14, preferred_types=["trend", "latest", "practical", "insight", "timeless", "quote"])),
+                    ("forced", build_evening_type_drafts(items, evening_seed + 31, max_candidates=10, preferred_types=["latest", "trend", "practical", "insight", "quote"]) + build_quote_fallback_drafts(evening_seed + 43, max_candidates=2)),
                 ]
                 for level, drafts in evening_batches:
                     print(f"[GEN LEVEL] {level}")

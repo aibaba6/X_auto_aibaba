@@ -235,16 +235,16 @@ def _build_retry_batches(
 ) -> list[tuple[str, list[DraftPost]]]:
     if slot == "morning":
         return [
-            ("strict", build_morning_type_drafts(seed=seed + history_count, max_candidates=10, items=items)),
-            ("relaxed", build_morning_type_drafts(seed=seed + history_count + 19, max_candidates=10, preferred_types=["timeless", "practical", "insight", "quote", "latest", "trend"], items=items)),
+            ("strict", build_morning_type_drafts(seed=seed + history_count, max_candidates=12, preferred_types=["latest", "trend", "practical", "insight", "timeless", "quote"], items=items)),
+            ("relaxed", build_morning_type_drafts(seed=seed + history_count + 19, max_candidates=12, preferred_types=["trend", "latest", "practical", "insight", "timeless", "quote"], items=items)),
             ("forced", build_quote_fallback_drafts(seed=seed + history_count + 37, max_candidates=4) + [_short_fallback_draft("morning")]),
         ]
     if slot == "evening":
         base_item = items[0] if items else ContentItem(source="", title="制作の終わり方", summary="", url="")
         return [
-            ("strict", build_evening_type_drafts(items, seed=seed + history_count, max_candidates=12, preferred_types=["practical", "insight", "latest", "trend", "timeless", "quote"])),
-            ("relaxed", build_evening_type_drafts(items, seed=seed + history_count + 17, max_candidates=12, preferred_types=["practical", "insight", "trend", "timeless", "latest", "quote"])),
-            ("forced", build_evening_type_drafts(items, seed=seed + history_count + 31, max_candidates=8, preferred_types=["trend", "practical", "insight", "quote"]) + build_quote_fallback_drafts(seed=seed + history_count + 43, max_candidates=2) + [_fallback_draft(base_item, "evening", horizon), _short_fallback_draft("evening")]),
+            ("strict", build_evening_type_drafts(items, seed=seed + history_count, max_candidates=14, preferred_types=["latest", "trend", "practical", "insight", "timeless", "quote"])),
+            ("relaxed", build_evening_type_drafts(items, seed=seed + history_count + 17, max_candidates=14, preferred_types=["trend", "latest", "practical", "insight", "timeless", "quote"])),
+            ("forced", build_evening_type_drafts(items, seed=seed + history_count + 31, max_candidates=10, preferred_types=["latest", "trend", "practical", "insight", "quote"]) + build_quote_fallback_drafts(seed=seed + history_count + 43, max_candidates=2) + [_fallback_draft(base_item, "evening", horizon), _short_fallback_draft("evening")]),
         ]
     base_item = items[0] if items else ContentItem(source="", title="AI運用の設計", summary="", url="")
     return [("forced", [_fallback_draft(base_item, slot, horizon), _short_fallback_draft(slot)])]

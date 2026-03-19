@@ -208,6 +208,89 @@ def _latest_topic_from_item(item: ContentItem) -> tuple[str, str]:
     return topic, body
 
 
+def _source_tags(slot_name: str, pattern: str) -> str:
+    if slot_name == "morning":
+        return "#デザイン #最新動向 #設計" if pattern == "latest" else "#デザイン #トレンド #UIUX"
+    return "#デザイン #最新動向 #実務" if pattern == "latest" else "#デザイン #トレンド #プロダクト"
+
+
+def _source_hook(title: str, slot_name: str, pattern: str, variant: int) -> str:
+    hooks = {
+        "morning": {
+            "latest": [
+                f"{title} から、最近のデザインの流れが見えます",
+                f"{title} を見ると、今の設計の重心がわかります",
+            ],
+            "trend": [
+                f"{title} は、今のトレンドを表面より深く見られる題材です",
+                f"{title} を追うと、流行の奥にある判断軸が見えてきます",
+            ],
+        },
+        "evening": {
+            "latest": [
+                f"{title} を見ると、今日の終わりに整理したい論点が見えてきます",
+                f"{title} は、いまのデザイン実務がどこへ寄っているかを映しています",
+            ],
+            "trend": [
+                f"{title} は、話題の形より何を減らしているかが気になります",
+                f"{title} を追うと、流行の裏で変わっている設計基準が見えます",
+            ],
+        },
+    }
+    pool = hooks.get(slot_name, {}).get(pattern, [title])
+    return pool[variant % len(pool)]
+
+
+def _source_takeaway(slot_name: str, pattern: str, variant: int) -> str:
+    takeaways = {
+        "morning": {
+            "latest": [
+                "見た目の新しさより、どの判断を減らしているかを見る。",
+                "朝に見るなら、使い手の迷いをどこで減らしているかを拾う。",
+            ],
+            "trend": [
+                "流行をなぞるより、どの役割分担が残りそうかを観察する。",
+                "真似する前に、体験のどこが軽くなっているかを言葉にする。",
+            ],
+        },
+        "evening": {
+            "latest": [
+                "明日に残すなら、見た目より運用が軽くなる要素を1つ拾う。",
+                "今日の学びとして残すなら、増えた機能より減った迷いを見る。",
+            ],
+            "trend": [
+                "流れを見るほど、派手さより判断基準の変化をメモしておく。",
+                "話題を追った日は、どの文脈で効くかまで分けておくと次に使いやすい。",
+            ],
+        },
+    }
+    pool = takeaways.get(slot_name, {}).get(pattern, ["要点を1つだけ残す。"])
+    return pool[variant % len(pool)]
+
+
+def _build_source_post(item: ContentItem, slot_name: str, pattern: str, variant: int) -> tuple[str, str, str]:
+    title = item.title.replace("\n", " ").strip()
+    summary = " ".join(item.summary.replace("\n", " ").split())[:140]
+    hook = _source_hook(title, slot_name, pattern, variant)
+    if pattern == "latest":
+        topic = f"{title} から読む最近のデザインの流れ"
+        body = (
+            f"{summary} を見ると、派手さより運用と体験の整合へ重心が寄っています。"
+            if summary
+            else f"{title} には、見た目を増やすより体験を整理する流れが出ています。"
+        )
+    else:
+        topic = f"{title} をデザイン視点で解釈する"
+        body = (
+            f"{summary} から見えるのは、表現の新しさより判断の軽さが評価されていること。"
+            if summary
+            else f"{title} は、流行の形より判断を軽くする設計が注目されている題材です。"
+        )
+    takeaway = _source_takeaway(slot_name, pattern, variant)
+    text = _build_structured_post(hook, body, takeaway, _source_tags(slot_name, pattern), slot_name)
+    return topic, text, body
+
+
 def _sentence(text: str) -> str:
     value = (text or "").strip()
     if not value:
@@ -272,8 +355,11 @@ def build_morning_type_drafts(
 ) -> list[DraftPost]:
     rng = random.Random(seed)
     drafts: list[DraftPost] = []
-    order = preferred_types[:] if preferred_types else ["latest", "trend", "timeless", "quote", "practical", "insight"]
-    rng.shuffle(order)
+    order = preferred_types[:] if preferred_types else ["latest", "trend", "practical", "insight", "timeless", "quote"]
+    if items:
+        order = ["latest", "trend"] + [pattern for pattern in order if pattern not in {"latest", "trend"}]
+    else:
+        rng.shuffle(order)
     for pattern in order:
         if pattern == "timeless":
             pool = MORNING_TIMELESS[:]
@@ -328,22 +414,22 @@ def build_morning_type_drafts(
             rng.shuffle(quote_pool)
             drafts.extend(_build_quote_drafts(quote_pool))
         elif pattern in {"latest", "trend"}:
-            source_items = (items or [])[: min(4, len(items or []))]
+            source_items = (items or [])[: min(5, len(items or []))]
             for item in source_items:
-                topic, body = (_latest_topic_from_item(item) if pattern == "latest" else _trend_topic_from_item(item))
-                tags = "#デザイン #UIUX #トレンド" if pattern == "trend" else "#デザイン #最新動向 #設計"
-                drafts.append(
-                    _draft(
-                        _normalize(f"{topic}\n\n{body}\n\n{tags}", slot_name="morning"),
-                        f"morning-{pattern}:{item.title}",
-                        "design",
-                        topic,
-                        body.split("\n")[-1],
-                        "最新の動きを設計視点で解釈する",
-                        "解説型",
-                        pattern,
+                for variant in range(2):
+                    topic, text, claim = _build_source_post(item, "morning", pattern, variant)
+                    drafts.append(
+                        _draft(
+                            text,
+                            f"morning-{pattern}:{item.title}",
+                            "design",
+                            topic,
+                            claim,
+                            "最新の動きを設計視点で解釈する",
+                            "解説型" if variant == 0 else "観察型",
+                            pattern,
+                        )
                     )
-                )
     return drafts[:max_candidates]
 
 
@@ -355,8 +441,11 @@ def build_evening_type_drafts(
 ) -> list[DraftPost]:
     rng = random.Random(seed)
     drafts: list[DraftPost] = []
-    order = preferred_types[:] if preferred_types else ["practical", "insight", "latest", "trend", "timeless", "quote"]
-    rng.shuffle(order)
+    order = preferred_types[:] if preferred_types else ["latest", "trend", "practical", "insight", "timeless", "quote"]
+    if items:
+        order = ["latest", "trend"] + [pattern for pattern in order if pattern not in {"latest", "trend"}]
+    else:
+        rng.shuffle(order)
     for pattern in order:
         if pattern == "timeless":
             pool = EVENING_TIMELESS[:]
@@ -411,22 +500,22 @@ def build_evening_type_drafts(
             rng.shuffle(quote_pool)
             drafts.extend(_build_quote_drafts(quote_pool[:2]))
         elif pattern in {"latest", "trend"}:
-            source_items = items[: min(4, len(items))]
+            source_items = items[: min(5, len(items))]
             for item in source_items:
-                topic, body = (_latest_topic_from_item(item) if pattern == "latest" else _trend_topic_from_item(item))
-                tags = "#デザイン #仕事術 #最新動向" if pattern == "latest" else "#デザイン #トレンド #プロダクト"
-                drafts.append(
-                    _draft(
-                        _normalize(f"{topic}\n\n{body}\n\n{tags}", slot_name="evening"),
-                        f"evening-{pattern}:{item.title}",
-                        "design",
-                        topic,
-                        body.split("\n")[-1],
-                        "最新の変化を実務判断へ翻訳する",
-                        "解説型",
-                        pattern,
+                for variant in range(2):
+                    topic, text, claim = _build_source_post(item, "evening", pattern, variant)
+                    drafts.append(
+                        _draft(
+                            text,
+                            f"evening-{pattern}:{item.title}",
+                            "design",
+                            topic,
+                            claim,
+                            "最新の変化を実務判断へ翻訳する",
+                            "解説型" if variant == 0 else "観察型",
+                            pattern,
+                        )
                     )
-                )
     return drafts[:max_candidates]
 
 
