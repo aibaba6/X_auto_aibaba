@@ -593,10 +593,40 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         print(f"- pdf_knowledge: {len(pdf_knowledge)} docs")
 
     if not items:
-        print("情報ソースが空のため終了")
-        return
+        if resolved_slot in {"morning", "evening"}:
+            print(f"[GEN SOURCE] slot={resolved_slot} rss_empty=yes static_only=yes")
+        else:
+            print(f"[GEN SOURCE] slot={resolved_slot} rss_empty=yes fallback_only=yes")
 
     if resolved_slot == "noon" and slot_latest_share_mode:
+        if not items:
+            fallback_noon = _short_fallback_draft("noon")
+            print("[FALLBACK USED] type=news-short-empty-source")
+            if config.dry_run:
+                print(f"[DRY-RUN NOON FALLBACK] {fallback_noon.text}")
+                return
+            tweet_id = _safe_create_post(x, fallback_noon.text, label="main-post-noon-empty-source")
+            if tweet_id:
+                register_text(fallback_noon.text, memory)
+                save_memory(memory)
+                append_history(
+                    fallback_noon.text,
+                    history,
+                    slot="noon",
+                    source="noon-empty-source-fallback",
+                    tweet_id=tweet_id,
+                    posted_at=now.isoformat(),
+                    content_type=fallback_noon.content_type,
+                    topic=fallback_noon.topic,
+                    pattern_id=fallback_noon.structure,
+                )
+                save_history(history)
+                print(f"noon fallback posted: {tweet_id}")
+                return
+            print("[NO POST GENERATED] reason=noon_empty_source_post_failed")
+            print("[UNIQUE HOLD] reason=no_unique_candidate slot=noon")
+            print("[SEMANTIC HOLD] reason=no_semantically_unique_candidate slot=noon")
+            return
         print("[2/5] 昼枠: AIニュース要約投稿を生成")
         noon_candidates = build_noon_news_candidates(
             model=config.model,
