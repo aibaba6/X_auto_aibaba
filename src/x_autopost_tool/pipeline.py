@@ -184,6 +184,36 @@ def _short_fallback_draft(slot: str) -> DraftPost:
     return DraftPost(text=normalize_x_post_text(text, slot_name=slot), reason="short-fallback", content_type="news", topic="判断を軽くするAI活用", structure="一言断言型")
 
 
+def _guaranteed_slot_draft(slot: str, d: date) -> DraftPost:
+    if slot == "morning":
+        text = (
+            "情報を足す前に、役割の重なりを減らすほうが整います。\n"
+            "主役と脇役の差だけ見直す。\n\n"
+            "#デザイン基礎\n#UIデザイン\n#情報設計"
+        )
+        return DraftPost(
+            text=normalize_x_post_text(text, slot_name="morning"),
+            reason="guaranteed-fallback",
+            content_type="basic",
+            topic="役割の重なりを減らす",
+            structure="一言断言型",
+        )
+    if slot == "evening":
+        text = (
+            "進んだ量より、迷いを減らせた日のほうが次につながります。\n"
+            "次に迷わない一言だけ残して終える。\n\n"
+            "#デザイン実務\n#制作フロー\n#継続改善"
+        )
+        return DraftPost(
+            text=normalize_x_post_text(text, slot_name="evening"),
+            reason="guaranteed-fallback",
+            content_type="daily",
+            topic="迷いを減らす終わり方",
+            structure="一言断言型",
+        )
+    return _short_fallback_draft(slot)
+
+
 def _build_retry_batches(
     *,
     slot: str,
@@ -811,12 +841,18 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
         if passed_drafts:
             break
     if not passed_drafts:
-        print(f"[NO POST GENERATED] reason=all_candidates_rejected slot={resolved_slot}")
-        print(f"[UNIQUE HOLD] reason=no_unique_candidate slot={resolved_slot}")
-        print(f"[SEMANTIC HOLD] reason=no_semantically_unique_candidate slot={resolved_slot}")
-        if resolved_slot == "evening":
-            print("[EVENING HOLD] reason=no_unique_evening_candidate")
-        return
+        if resolved_slot in {"morning", "evening"}:
+            forced = _guaranteed_slot_draft(resolved_slot, now.date())
+            print(f"[FALLBACK USED] type={forced.content_type or resolved_slot}-guaranteed")
+            print(f"[FINAL PICK] type={forced.content_type or resolved_slot}")
+            passed_drafts.append(forced)
+        else:
+            print(f"[NO POST GENERATED] reason=all_candidates_rejected slot={resolved_slot}")
+            print(f"[UNIQUE HOLD] reason=no_unique_candidate slot={resolved_slot}")
+            print(f"[SEMANTIC HOLD] reason=no_semantically_unique_candidate slot={resolved_slot}")
+            if resolved_slot == "evening":
+                print("[EVENING HOLD] reason=no_unique_evening_candidate")
+            return
 
     print("[3/5] 通常投稿")
     for i, d in enumerate(passed_drafts, start=1):

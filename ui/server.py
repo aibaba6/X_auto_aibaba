@@ -594,6 +594,18 @@ EVENING_FALLBACK_TAGS = [
     "#デザイン #継続改善 #仕事あるある",
 ]
 
+GUARANTEED_MORNING_POST = (
+    "情報を足す前に、役割の重なりを減らすほうが整います。\n"
+    "主役と脇役の差だけ見直す。\n\n"
+    "#デザイン基礎\n#UIデザイン\n#情報設計"
+)
+
+GUARANTEED_EVENING_POST = (
+    "進んだ量より、迷いを減らせた日のほうが次につながります。\n"
+    "次に迷わない一言だけ残して終える。\n\n"
+    "#デザイン実務\n#制作フロー\n#継続改善"
+)
+
 
 def _evening_fallback_post(d: date, variant: int = 0) -> str:
     base = d.toordinal() + variant * 7
@@ -652,9 +664,15 @@ def _unique_or_fallback(
                     candidate = alt
                     break
     if _is_used_before(candidate, memory, used_fp, history=history, slot=slot) or (_seen_keys(candidate) & local_fp):
-        print(f"[UNIQUE HOLD] reason=no_unique_candidate slot={slot}")
-        print(f"[SEMANTIC HOLD] reason=no_semantically_unique_candidate slot={slot}")
-        return ""
+        if slot == "morning":
+            candidate = normalize_x_post_text(GUARANTEED_MORNING_POST, slot_name="morning")
+        elif slot == "evening":
+            candidate = normalize_x_post_text(GUARANTEED_EVENING_POST, slot_name="evening")
+        else:
+            print(f"[UNIQUE HOLD] reason=no_unique_candidate slot={slot}")
+            print(f"[SEMANTIC HOLD] reason=no_semantically_unique_candidate slot={slot}")
+            return ""
+        print(f"[FALLBACK USED] type={slot}-guaranteed")
     _remember_seen(candidate, local_fp)
     print(f"[UNIQUE PICKED] fingerprint={strict_fingerprint(candidate)}")
     if history is not None:
@@ -1186,6 +1204,8 @@ def api_plan_preview():
                         posted_morning_fp,
                         history=history,
                     )
+                    if picked and not picked_draft:
+                        picked_draft = type("DraftLike", (), {"content_type": "basic"})()
                 text = picked
                 plan.append(
                     {
@@ -1258,6 +1278,8 @@ def api_plan_preview():
                         posted_evening_fp,
                         history=history,
                     )
+                    if picked and not picked_draft:
+                        picked_draft = type("DraftLike", (), {"content_type": "daily"})()
                 if not picked:
                     print(f"[NO POST GENERATED] reason=planner_evening_fallback_empty slot={slot}")
                     print(f"[EVENING HOLD] reason=no_unique_evening_candidate date={d.isoformat()}")
