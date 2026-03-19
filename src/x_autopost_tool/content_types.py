@@ -168,6 +168,7 @@ def _draft(
     content_type: str,
     topic: str,
     claim: str,
+    angle: str,
     structure: str,
     pattern_type: str,
 ) -> DraftPost:
@@ -178,6 +179,7 @@ def _draft(
         pattern_type=pattern_type,
         topic=topic,
         claim=claim,
+        angle=angle,
         structure=structure,
     )
 
@@ -232,7 +234,18 @@ def _build_quote_drafts(pool: list[dict[str, str]]) -> list[DraftPost]:
         if not ok:
             print("[QUOTE REPAIR] action=skip_broken_quote")
             continue
-        drafts.append(_draft(text, "quote", "design", item["author"], item["interpretation"], "引用解釈型", "quote"))
+        drafts.append(
+            _draft(
+                text,
+                "quote",
+                "design",
+                item["author"],
+                item["interpretation"],
+                "言葉を実務判断へ翻訳する",
+                "引用解釈型",
+                "quote",
+            )
+        )
     return drafts
 
 
@@ -258,6 +271,7 @@ def build_morning_type_drafts(
                         "design",
                         item["topic"],
                         item["action"],
+                        "普遍原則を判断軸に戻す",
                         item["structure"],
                         "timeless",
                     )
@@ -273,6 +287,7 @@ def build_morning_type_drafts(
                         "design",
                         item["topic"],
                         item["action"],
+                        "実務の迷いを減らす",
                         item["structure"],
                         "practical",
                     )
@@ -288,6 +303,7 @@ def build_morning_type_drafts(
                         "design",
                         item["topic"],
                         item["action"],
+                        "小さな観察を設計に変える",
                         item["structure"],
                         "insight",
                     )
@@ -308,6 +324,7 @@ def build_morning_type_drafts(
                         "design",
                         topic,
                         body.split("\n")[-1],
+                        "最新の動きを設計視点で解釈する",
                         "解説型",
                         pattern,
                     )
@@ -337,6 +354,7 @@ def build_evening_type_drafts(
                         "design",
                         item["topic"],
                         item["action"],
+                        "普遍原則を終業時の判断に戻す",
                         item["structure"],
                         "timeless",
                     )
@@ -352,6 +370,7 @@ def build_evening_type_drafts(
                         "design",
                         item["topic"],
                         item["action"],
+                        "現場で明日すぐ効く判断に寄せる",
                         item["structure"],
                         "practical",
                     )
@@ -367,6 +386,7 @@ def build_evening_type_drafts(
                         "design",
                         item["topic"],
                         item["action"],
+                        "日常観察を設計の気づきへ変える",
                         item["structure"],
                         "insight",
                     )
@@ -387,6 +407,7 @@ def build_evening_type_drafts(
                         "design",
                         topic,
                         body.split("\n")[-1],
+                        "最新の変化を実務判断へ翻訳する",
                         "解説型",
                         pattern,
                     )

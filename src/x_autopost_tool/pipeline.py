@@ -22,6 +22,7 @@ from .uniqueness import (
     history_content_types,
     history_fingerprints,
     history_pattern_types,
+    history_idea_keys,
     load_history,
     load_memory,
     loose_fingerprint,
@@ -573,6 +574,7 @@ def _post_due_queue_item(
         content_type=str(item.get("content_type", "")).strip(),
         pattern_type=str(item.get("pattern_type", item.get("content_type", ""))).strip(),
         topic=str(item.get("topic", "")).strip(),
+        angle=str(item.get("angle", "")).strip(),
         pattern_id=str(item.get("pattern_id", "")).strip(),
     )
     save_history(history)
@@ -607,6 +609,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
     posted_slot_loose_fingerprints = history_fingerprints(history, slot=resolved_slot, mode="loose")
     recent_semantic = semantic_summaries(history, slot=resolved_slot, limit=10)
     recent_content_types = history_pattern_types(history, slot=resolved_slot, limit=6)
+    recent_idea_keys = history_idea_keys(history, slot=resolved_slot, limit=40)
     memory_changed = False
     history_changed = False
     x = XClient()
@@ -660,6 +663,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                     content_type=fallback_noon.content_type,
                     pattern_type=fallback_noon.pattern_type,
                     topic=fallback_noon.topic,
+                    angle=fallback_noon.angle,
                     pattern_id=fallback_noon.structure,
                 )
                 save_history(history)
@@ -720,6 +724,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                         content_type="news",
                         pattern_type=getattr(picked_noon, "pattern_type", "news"),
                         topic=getattr(picked_noon, "topic", ""),
+                        angle=getattr(picked_noon, "angle", ""),
                         pattern_id=getattr(picked_noon, "structure", ""),
                     )
                     posted_slot_fingerprints.add(strict_fingerprint(picked_noon.text))
@@ -746,6 +751,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
                 content_type=fallback_noon.content_type,
                 pattern_type=fallback_noon.pattern_type,
                 topic=fallback_noon.topic,
+                angle=fallback_noon.angle,
                 pattern_id=fallback_noon.structure,
             )
             save_history(history)
@@ -812,6 +818,14 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             if not _validate_quote_candidate(d):
                 print("[GEN REJECT] reason=quote_format_invalid")
                 continue
+            idea_key = ((d.topic or "").strip().lower(), (d.claim or "").strip().lower(), (d.angle or "").strip().lower())
+            print(f"[IDEA] topic={d.topic[:80] if d.topic else '-'} claim={d.claim[:80] if d.claim else '-'} angle={d.angle[:80] if d.angle else '-'}")
+            print(f"[PATTERN] {d.pattern_type or d.content_type or '-'}")
+            print(f"[STRUCTURE] {d.structure or '-'}")
+            if any(idea_key) and idea_key in recent_idea_keys:
+                print("[DUPLICATE REJECT] reason=idea_duplicate")
+                print("[HISTORY REJECT] reason=idea_duplicate")
+                continue
             if _is_duplicate_candidate(
                 d.text,
                 memory,
@@ -854,6 +868,8 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             passed_drafts.append(d)
             if d.content_type:
                 recent_content_types.append(d.pattern_type or d.content_type)
+            if any(idea_key):
+                recent_idea_keys.add(idea_key)
             break
         if passed_drafts:
             break
@@ -937,6 +953,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             content_type=d.content_type,
             pattern_type=d.pattern_type,
             topic=d.topic,
+            angle=d.angle,
             pattern_id=d.structure,
         )
         posted_slot_fingerprints.add(strict_fingerprint(d.text))
@@ -1003,6 +1020,7 @@ def run_once(config: AppConfig, slot: str | None = None, queue_path: str | None 
             posted_at=now.isoformat(),
             content_type="quote",
             pattern_type="quote",
+            angle="外部投稿を自分の視点で補足する",
         )
         history_changed = True
         posted_quotes += 1

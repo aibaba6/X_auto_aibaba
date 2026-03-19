@@ -600,6 +600,20 @@ def history_pattern_types(store: HistoryStore, slot: str | None = None, limit: i
     return values
 
 
+def history_idea_keys(store: HistoryStore, slot: str | None = None, limit: int | None = None) -> set[tuple[str, str, str]]:
+    relevant = [entry for entry in store.entries if not slot or str(entry.get("slot", "")).strip() == slot]
+    if limit is not None:
+        relevant = relevant[-limit:]
+    out: set[tuple[str, str, str]] = set()
+    for entry in relevant:
+        topic = str(entry.get("topic", "")).strip().lower()
+        claim = str(entry.get("core_claim", entry.get("semantic_claim", ""))).strip().lower()
+        angle = str(entry.get("angle", "")).strip().lower()
+        if topic or claim or angle:
+            out.add((topic, claim, angle))
+    return out
+
+
 def semantic_summaries(store: HistoryStore, slot: str | None = None, limit: int = 8) -> list[str]:
     relevant = [entry for entry in store.entries if not slot or str(entry.get("slot", "")).strip() == slot]
     summaries: list[str] = []
@@ -630,6 +644,7 @@ def append_history(
     content_type: str = "",
     pattern_type: str = "",
     topic: str = "",
+    angle: str = "",
     pattern_id: str = "",
 ) -> None:
     raw = (text or "").strip()
@@ -654,6 +669,7 @@ def append_history(
             "created_at": created_at or posted_at,
             "posted_at": posted_at,
             "topic": topic or semantic.topic,
+            "angle": angle,
             "tags": extract_tags(raw),
             "pattern_id": pattern_id or semantic.structure,
             "semantic_hook": semantic.hook,

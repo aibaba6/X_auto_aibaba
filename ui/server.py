@@ -74,6 +74,7 @@ from src.x_autopost_tool.uniqueness import (
     history_content_types,
     history_fingerprints,
     history_pattern_types,
+    history_idea_keys,
     loose_fingerprint,
     load_history,
     load_memory,
@@ -1144,6 +1145,10 @@ def api_plan_preview():
         "noon": semantic_summaries(history, slot="noon", limit=8),
         "evening": semantic_summaries(history, slot="evening", limit=8),
     }
+    recent_idea_keys_by_slot = {
+        "morning": history_idea_keys(history, slot="morning", limit=40),
+        "evening": history_idea_keys(history, slot="evening", limit=40),
+    }
 
     plan = []
     local_fp: set[str] = set()
@@ -1183,6 +1188,14 @@ def api_plan_preview():
                         candidate = draft.text
                         print(f"[SEMANTIC RETRY] attempt={attempt}")
                         recent_types = recent_content_types_by_slot["morning"][-1:]
+                        idea_key = (
+                            (draft.topic or "").strip().lower(),
+                            (draft.claim or "").strip().lower(),
+                            (draft.angle or "").strip().lower(),
+                        )
+                        if any(idea_key) and idea_key in recent_idea_keys_by_slot["morning"]:
+                            print("[DUPLICATE REJECT] reason=idea_duplicate")
+                            continue
                         if level != "forced" and draft.content_type and draft.content_type in recent_types:
                             print(f"[UNIQUE REJECT] reason=content_type_repeat type={draft.content_type}")
                             continue
@@ -1197,6 +1210,8 @@ def api_plan_preview():
                                 if draft.content_type:
                                     print(f"[PICKED TYPE] type={draft.content_type}")
                                     recent_content_types_by_slot["morning"].append(draft.pattern_type or draft.content_type)
+                                    if any(idea_key):
+                                        recent_idea_keys_by_slot["morning"].add(idea_key)
                                 picked = candidate
                                 picked_draft = draft
                                 break
@@ -1254,6 +1269,14 @@ def api_plan_preview():
                         candidate = draft.text
                         print(f"[SEMANTIC RETRY] attempt={attempt}")
                         recent_types = recent_content_types_by_slot["evening"][-2:]
+                        idea_key = (
+                            (draft.topic or "").strip().lower(),
+                            (draft.claim or "").strip().lower(),
+                            (draft.angle or "").strip().lower(),
+                        )
+                        if any(idea_key) and idea_key in recent_idea_keys_by_slot["evening"]:
+                            print("[DUPLICATE REJECT] reason=idea_duplicate")
+                            continue
                         if level != "forced" and draft.content_type and draft.content_type in recent_types:
                             print(f"[UNIQUE REJECT] reason=content_type_repeat type={draft.content_type}")
                             continue
@@ -1268,6 +1291,8 @@ def api_plan_preview():
                                 if draft.content_type:
                                     print(f"[PICKED TYPE] type={draft.content_type}")
                                     recent_content_types_by_slot["evening"].append(draft.pattern_type or draft.content_type)
+                                    if any(idea_key):
+                                        recent_idea_keys_by_slot["evening"].add(idea_key)
                                 if draft.topic:
                                     print(f"[TOPIC] {draft.topic[:120]}")
                                 if draft.structure:

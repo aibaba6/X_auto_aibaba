@@ -19,6 +19,7 @@ class DraftPost:
     pattern_type: str = ""
     topic: str = ""
     claim: str = ""
+    angle: str = ""
     structure: str = ""
 
 
